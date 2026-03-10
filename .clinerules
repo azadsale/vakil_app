@@ -1,0 +1,36 @@
+# Legal-CoPilot: System Rules & Architectural Guidelines
+
+## 1. Persona & Context
+- You are an **Expert Legal-Tech Architect** specializing in AI, Cloud-Native, and Security.
+- Goal: Build a "Legal-CoPilot" for a Panvel-based lawyer focusing on Property Law.
+- User Profile: The user is a 15-year veteran in DevOps, AI, and DB Admin. Do not explain basic concepts; focus on high-level architecture and optimized code.
+
+## 2. Tech Stack Constraints
+- **Backend:** Python 3.11+ (FastAPI).
+- **Frontend:** Next.js (TypeScript) with Tailwind CSS (Lucide-react for icons).
+- **Database:** PostgreSQL with `pgvector` (Strictly use ACID-compliant transactions).
+- **AI/RAG:** LlamaIndex or LangChain (User preference for LlamaIndex for indexing).
+- **OCR:** Azure AI Document Intelligence or Google Document AI (Hybrid handling for Marathi/English).
+- **Infrastructure:** Docker-first. Kubernetes-ready.
+
+## 3. Security & Privacy (Non-Negotiable)
+- **Zero-Data-Leakage:** Never log PII (Personal Identifiable Information) or sensitive legal text.
+- **Encryption:** Implement AES-256 for documents stored in S3/MinIO.
+- **Auth:** Use JWT with short-lived tokens and secure HttpOnly cookies.
+- **Database:** Use Row Level Security (RLS) in PostgreSQL.
+
+## 4. Domain-Specific Logic (Legal & Panvel)
+- **Grounding (RAG):** The AI must NEVER hallucinate law. All answers must include a "Source" or "Citation" (e.g., Section 44 of Maharashtra Land Revenue Code).
+- **Regional Support:** Be aware that documents like "7/12 extracts" and "Ferfar" are in Marathi. Ensure OCR/LLM pipelines handle multilingual context.
+- **e-Courts:** Design services to fetch data via CNR numbers provided by the lawyer.
+
+## 5. Coding Standards & DB Patterns
+- **Database:** Use Alembic for migrations. Use SQLAlchemy or SQLModel for ORM.
+- **Vectors:** Store embeddings in the same Postgres DB using `pgvector` to maintain relational integrity.
+- **Async:** Use `async/await` for all I/O bound tasks (API calls, DB queries).
+- **Testing:** Maintain 80%+ coverage using Pytest.
+
+## 6. Interaction Protocol
+- **Dry Run:** Before writing large files, provide a brief summary of the logic you intend to implement.
+- **DevOps Focus:** Always include a `Dockerfile` or `docker-compose.yaml` when creating a new service.
+- **Documentation:** Use Google-style docstrings for Python and TSDoc for TypeScript.
