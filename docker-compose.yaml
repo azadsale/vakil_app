@@ -1,0 +1,149 @@
+version: "3.9"
+
+# Legal-CoPilot — Local Development Stack
+# Services: postgres (pgvector), backend (FastAPI), frontend (Next.js), minio, redis
+# Usage: make up
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16 with pgvector extension
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: vakil_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-vakil}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vakilsecret}
+      POSTGRES_DB: ${POSTGRES_DB:-vakildb}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vakil} -d ${POSTGRES_DB:-vakildb}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - vakil_net
+
+  # ---------------------------------------------------------------------------
+  # Redis 7 — task queue for async OCR jobs (Celery-ready)
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: vakil_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - vakil_net
+
+  # ---------------------------------------------------------------------------
+  # MinIO — S3-compatible object storage for AES-256 encrypted documents
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: vakil_minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-vakilminio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-vakilminio123}
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # MinIO web console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - vakil_net
+
+  # ---------------------------------------------------------------------------
+  # FastAPI Backend
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: development
+    container_name: vakil_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-vakil}:${POSTGRES_PASSWORD:-vakilsecret}@postgres:5432/${POSTGRES_DB:-vakildb}
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-vakilminio}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-vakilminio123}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app  # hot-reload in dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - vakil_net
+
+  # ---------------------------------------------------------------------------
+  # Next.js Frontend (placeholder — full impl in separate task)
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: vakil_frontend
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - vakil_net
+
+# ---------------------------------------------------------------------------
+# Named Volumes
+# ---------------------------------------------------------------------------
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  minio_data:
+    driver: local
+
+# ---------------------------------------------------------------------------
+# Networks
+# ---------------------------------------------------------------------------
+networks:
+  vakil_net:
+    driver: bridge
