@@ -15,7 +15,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from openai import AsyncOpenAI
+from groq import AsyncGroq
 
 from app.config import get_settings
 from app.utils.logging import get_logger
@@ -189,10 +189,10 @@ async def extract_facts_from_transcript(
     if not transcript or not transcript.strip():
         raise ValueError("Transcript cannot be empty for fact extraction")
 
-    api_key = settings.openai_api_key.get_secret_value()
+    api_key = settings.groq_api_key.get_secret_value()
     if not api_key:
         raise FactExtractionError(
-            "OPENAI_API_KEY not configured. Add it to .env"
+            "GROQ_API_KEY not configured. Get a free key at https://console.groq.com"
         )
 
     # Hash transcript for dedup/caching (not the content itself)
@@ -203,14 +203,14 @@ async def extract_facts_from_transcript(
         case_id=case_id,
         transcript_hash=transcript_hash,  # hash only, not content
         transcript_char_count=len(transcript),
-        model=settings.llama_index_llm_model,
+        model=settings.groq_llm_model,
     )
 
-    client = AsyncOpenAI(api_key=api_key)
+    client = AsyncGroq(api_key=api_key)
 
     try:
         response = await client.chat.completions.create(
-            model=settings.llama_index_llm_model,
+            model=settings.groq_llm_model,
             messages=[
                 {"role": "system", "content": FACT_EXTRACTION_SYSTEM_PROMPT},
                 {
@@ -260,7 +260,7 @@ async def extract_facts_from_transcript(
     # Inject metadata
     facts["_metadata"] = {
         "extracted_at": datetime.utcnow().isoformat(),
-        "model": settings.llama_index_llm_model,
+        "model": settings.groq_llm_model,
         "transcript_hash": transcript_hash,
         "missing_fields_count": missing_count,
     }

@@ -118,6 +118,7 @@ async def upload_statute(
             document_id=str(legal_doc.id),
             short_name=short_name,
             doc_type=doc_type.value,
+            db=db,
         )
     except Exception as exc:
         legal_doc.indexing_status = IndexingStatus.FAILED

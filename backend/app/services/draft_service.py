@@ -20,7 +20,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from openai import AsyncOpenAI
+from groq import AsyncGroq
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -31,7 +31,7 @@ from app.services.fact_extraction_service import (
     extract_facts_from_transcript,
     get_missing_fields,
 )
-from app.services.rag_service import build_legal_context_string, query_dv_act
+from app.services.rag_service import build_legal_context_string, embed_single, query_dv_act
 from app.services.template_service import (
     get_top_templates,
     increment_template_usage,
@@ -165,7 +165,7 @@ async def generate_dv_petition_draft(
     ]
     rag_query = _build_rag_query(relief_types, incident_types)
 
-    retrieved_sections = await query_dv_act(query=rag_query, top_k=5)
+    retrieved_sections = await query_dv_act(query=rag_query, top_k=5, db=db)
     legal_context = build_legal_context_string(retrieved_sections)
     legal_sections_used = [s["source_citation"] for s in retrieved_sections]
 
@@ -195,11 +195,13 @@ async def generate_dv_petition_draft(
     # ------------------------------------------------------------------
     # Step 4: Draft Generation
     # ------------------------------------------------------------------
-    api_key = settings.openai_api_key.get_secret_value()
+    api_key = settings.groq_api_key.get_secret_value()
     if not api_key:
-        raise DraftGenerationError("OPENAI_API_KEY not configured")
+        raise DraftGenerationError(
+            "GROQ_API_KEY not configured. Get a free key at https://console.groq.com"
+        )
 
-    client = AsyncOpenAI(api_key=api_key)
+    client = AsyncGroq(api_key=api_key)
 
     user_prompt = DRAFT_GENERATION_USER_TEMPLATE.format(
         facts_json=json.dumps(facts, indent=2, ensure_ascii=False),
@@ -221,7 +223,7 @@ async def generate_dv_petition_draft(
 
     try:
         response = await client.chat.completions.create(
-            model=settings.llama_index_llm_model,
+            model=settings.groq_llm_model,
             messages=[
                 {"role": "system", "content": DRAFT_GENERATION_SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
@@ -259,7 +261,7 @@ async def generate_dv_petition_draft(
         legal_sections_used=legal_sections_used,
         template_ids_used=template_ids_used,
         draft_text=draft_text_with_disclaimer,
-        generation_model=settings.llama_index_llm_model,
+        generation_model=settings.groq_llm_model,
         generation_prompt_hash=prompt_hash,
     )
     db.add(draft)
@@ -280,6 +282,7 @@ async def generate_dv_petition_draft(
         case_id=str(case_id),
         statement_id=str(statement.id),
         draft_char_count=len(draft_text),
+        model=settings.groq_llm_model,
         missing_fields_count=len(missing_fields),
     )
 

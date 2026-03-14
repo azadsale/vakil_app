@@ -10,14 +10,13 @@ Handles:
 import uuid
 from typing import Any
 
-import numpy as np
-from openai import AsyncOpenAI
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.models.draft_petition import DraftPetition, DraftStatus
 from app.models.lawyer_template import LawyerTemplate, TemplateType
+from app.services.rag_service import embed_single
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -29,33 +28,22 @@ class TemplateServiceError(Exception):
 
 
 async def generate_embedding(text_content: str) -> list[float]:
-    """Generate an embedding vector for a text using OpenAI embeddings.
+    """Generate a 384-dim embedding using fastembed (delegated to rag_service).
 
     Args:
-        text_content: Text to embed (petition content, facts summary, etc.).
+        text_content: Text to embed.
 
     Returns:
-        List of floats (1536-dim for ada-002).
+        List of 384 floats.
 
     Raises:
-        TemplateServiceError: If embedding API call fails.
+        TemplateServiceError: If embedding fails.
     """
-    api_key = settings.openai_api_key.get_secret_value()
-    if not api_key:
-        raise TemplateServiceError("OPENAI_API_KEY not configured")
-
-    client = AsyncOpenAI(api_key=api_key)
-
     try:
-        response = await client.embeddings.create(
-            input=text_content,
-            model=settings.llama_index_embed_model,
-        )
+        return embed_single(text_content)
     except Exception as exc:
         logger.error("embedding_generation_failed", error=str(exc))
         raise TemplateServiceError(f"Embedding failed: {exc}") from exc
-
-    return response.data[0].embedding
 
 
 async def add_template(

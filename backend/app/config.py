@@ -79,11 +79,19 @@ class Settings(BaseSettings):
     google_processor_id: str = ""
 
     # -------------------------------------------------------------------------
-    # LlamaIndex / LLM
+    # Groq (Free LLM — OpenAI-compatible, get key at console.groq.com)
     # -------------------------------------------------------------------------
-    openai_api_key: SecretStr = SecretStr("")
-    llama_index_embed_model: str = "text-embedding-ada-002"
-    llama_index_llm_model: str = "gpt-4o"
+    groq_api_key: SecretStr = SecretStr("")
+    groq_api_base_url: str = "https://api.groq.com/openai/v1"
+    groq_llm_model: str = "llama-3.3-70b-versatile"
+
+    # -------------------------------------------------------------------------
+    # LlamaIndex / Embeddings (sentence-transformers — local, no API key)
+    # -------------------------------------------------------------------------
+    openai_api_key: SecretStr = SecretStr("")  # kept for backward compat
+    llama_index_embed_model: str = "BAAI/bge-small-en-v1.5"  # fastembed ONNX model
+    llama_index_llm_model: str = "llama-3.3-70b-versatile"
+    embedding_dim: int = 384  # bge-small-en-v1.5 dimension
 
     # -------------------------------------------------------------------------
     # Sarvam AI (Saaras v3 — Audio Transcription)

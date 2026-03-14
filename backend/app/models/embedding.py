@@ -15,10 +15,10 @@ from sqlalchemy import Column
 from sqlmodel import Field, Relationship, SQLModel
 
 # Embedding dimension — must match the model used:
-# OpenAI text-embedding-ada-002 → 1536
-# OpenAI text-embedding-3-small → 1536
-# OpenAI text-embedding-3-large → 3072
-EMBEDDING_DIM = 1536
+# sentence-transformers/all-MiniLM-L6-v2 → 384 (local, free, no API key)
+# sentence-transformers/all-mpnet-base-v2 → 768
+# OpenAI text-embedding-ada-002 → 1536 (paid)
+EMBEDDING_DIM = 384
 
 
 class DocumentChunk(SQLModel, table=True):

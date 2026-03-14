@@ -14,7 +14,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import Column
 from sqlmodel import Field, SQLModel
 
-TEMPLATE_EMBEDDING_DIM = 1536  # text-embedding-ada-002 / text-embedding-3-small
+TEMPLATE_EMBEDDING_DIM = 384   # sentence-transformers/all-MiniLM-L6-v2 (local, free)
 
 
 class TemplateType(str, Enum):

@@ -41,11 +41,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         service="vakil-backend",
     )
 
-    # Configure LlamaIndex (embedding model + LLM)
-    if settings.openai_api_key.get_secret_value():
-        configure_llama_index()
-    else:
-        logger.warning("openai_api_key_not_set", msg="RAG and drafting features disabled")
+    # Configure LlamaIndex (HuggingFace embeddings + Groq LLM)
+    # Embeddings load regardless (local sentence-transformers)
+    # LLM requires GROQ_API_KEY (free at console.groq.com)
+    configure_llama_index()
 
     # Verify DB is reachable (fail fast on misconfiguration)
     try:

@@ -1,32 +1,27 @@
-"""RAG service — LlamaIndex pipeline over legal statutes (DV Act 2005).
+"""RAG service — PDF ingestion and semantic search using fastembed + pgvector.
 
-Architecture:
-    1. PDF ingestion: extract text + chunk (512 tokens, 50 overlap)
-    2. Embed chunks: OpenAI text-embedding-ada-002
-    3. Store: pgvector via LlamaIndex PGVectorStore
-    4. Query: semantic search → return sections with citations
+Architecture (no LlamaIndex — pure fastembed + SQLAlchemy):
+    1. PDF ingestion: pypdf text extraction → chunk → embed → INSERT to postgres
+    2. Semantic search: embed query → pgvector cosine similarity → return sections
+
+Embeddings: BAAI/bge-small-en-v1.5 via fastembed (ONNX, ~100MB, no API key, 384-dim)
+LLM: Groq llama-3.3-70b-versatile — called directly in draft_service.py
 
 Anti-hallucination guarantee:
-    Every retrieved chunk carries a ``source_citation`` that is injected
-    verbatim into the generation prompt. The LLM is forbidden from citing
-    any section not present in the retrieved context.
+    Every chunk stored with source_citation. Returned as part of context window.
+    LLM is strictly forbidden from citing anything outside the retrieved context.
 """
 
+import re
+import uuid
 from pathlib import Path
 from typing import Any
 
-from llama_index.core import (
-    Settings as LlamaSettings,
-    SimpleDirectoryReader,
-    StorageContext,
-    VectorStoreIndex,
-)
-from llama_index.core.node_parser import SentenceSplitter
-from llama_index.core.schema import NodeWithScore, TextNode
-from llama_index.embeddings.openai import OpenAIEmbedding
-from llama_index.llms.openai import OpenAI as LlamaOpenAI
-from llama_index.vector_stores.postgres import PGVectorStore
-from sqlalchemy import make_url
+import numpy as np
+from fastembed import TextEmbedding
+from pypdf import PdfReader
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.utils.logging import get_logger
@@ -35,55 +30,91 @@ logger = get_logger(__name__)
 settings = get_settings()
 
 # ---------------------------------------------------------------------------
-# LlamaIndex global settings (set once at startup)
+# Fastembed model (lazy-loaded, cached in-process)
+# BAAI/bge-small-en-v1.5: 384-dim, ~100MB ONNX, no API key needed
 # ---------------------------------------------------------------------------
+_embed_model: TextEmbedding | None = None
+
+
+def get_embed_model() -> TextEmbedding:
+    """Lazy-load fastembed model (downloaded once to ~/.cache/fastembed)."""
+    global _embed_model
+    if _embed_model is None:
+        logger.info("fastembed_model_loading", model="BAAI/bge-small-en-v1.5")
+        _embed_model = TextEmbedding("BAAI/bge-small-en-v1.5")
+        logger.info("fastembed_model_loaded")
+    return _embed_model
+
+
 def configure_llama_index() -> None:
-    """Configure LlamaIndex global settings.
+    """Pre-warm the embedding model at startup.
 
-    Call once from app lifespan startup.
-    Uses OpenAI embeddings + GPT-4o for generation.
+    Called from app lifespan. Downloads BAAI/bge-small-en-v1.5 if not cached.
+    No LLM config here — Groq called directly in draft_service.py.
     """
-    api_key = settings.openai_api_key.get_secret_value()
-    LlamaSettings.embed_model = OpenAIEmbedding(
-        model=settings.llama_index_embed_model,
-        api_key=api_key,
-    )
-    LlamaSettings.llm = LlamaOpenAI(
-        model=settings.llama_index_llm_model,
-        api_key=api_key,
-        temperature=0.0,
-    )
-    LlamaSettings.chunk_size = 512
-    LlamaSettings.chunk_overlap = 50
+    get_embed_model()  # pre-warm
     logger.info(
-        "llama_index_configured",
-        embed_model=settings.llama_index_embed_model,
-        llm_model=settings.llama_index_llm_model,
+        "embedding_model_ready",
+        model="BAAI/bge-small-en-v1.5",
+        dim=settings.embedding_dim,
     )
 
 
-def _get_vector_store(table_name: str = "legal_document_chunks") -> PGVectorStore:
-    """Create a LlamaIndex PGVectorStore pointing at our pgvector table.
+def embed_texts(texts: list[str]) -> list[list[float]]:
+    """Batch embed texts using fastembed.
 
     Args:
-        table_name: PostgreSQL table name for vector storage.
-                    Separate tables for legal statutes vs case documents.
+        texts: List of strings to embed.
 
     Returns:
-        Configured PGVectorStore instance.
+        List of 384-dim float vectors.
     """
-    db_url = settings.database_url.get_secret_value()
-    url = make_url(db_url)
+    model = get_embed_model()
+    embeddings = list(model.embed(texts))
+    return [emb.tolist() for emb in embeddings]
 
-    return PGVectorStore.from_params(
-        database=url.database,
-        host=url.host,
-        password=url.password,
-        port=url.port or 5432,
-        user=url.username,
-        table_name=table_name,
-        embed_dim=1536,  # text-embedding-ada-002 dimension
-    )
+
+def embed_single(text: str) -> list[float]:
+    """Embed a single text string.
+
+    Args:
+        text: String to embed.
+
+    Returns:
+        384-dim float vector.
+    """
+    return embed_texts([text])[0]
+
+
+def _chunk_text(text: str, chunk_size: int = 800, overlap: int = 100) -> list[str]:
+    """Split text into overlapping chunks by sentence boundaries.
+
+    Args:
+        text: Full document text.
+        chunk_size: Target characters per chunk.
+        overlap: Overlap characters between consecutive chunks.
+
+    Returns:
+        List of text chunks.
+    """
+    # Split on sentence boundaries
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    chunks: list[str] = []
+    current = ""
+
+    for sentence in sentences:
+        if len(current) + len(sentence) > chunk_size and current:
+            chunks.append(current.strip())
+            # Start new chunk with overlap from end of previous
+            overlap_text = current[-overlap:] if len(current) > overlap else current
+            current = overlap_text + " " + sentence
+        else:
+            current = (current + " " + sentence).strip()
+
+    if current.strip():
+        chunks.append(current.strip())
+
+    return [c for c in chunks if len(c) > 50]  # skip tiny fragments
 
 
 async def ingest_legal_pdf(
@@ -91,17 +122,19 @@ async def ingest_legal_pdf(
     document_id: str,
     short_name: str,
     doc_type: str = "dv_act_2005",
+    db: AsyncSession | None = None,
 ) -> int:
     """Ingest a legal statute PDF into pgvector.
 
-    Chunks the PDF, generates embeddings, and stores in the
-    ``legal_document_chunks`` table with source citations.
+    Reads PDF, extracts text page by page, chunks it, embeds with fastembed,
+    and INSERTs into the ``legal_statute_chunks`` table.
 
     Args:
-        pdf_path: Local path to the PDF file.
+        pdf_path: Local path to the PDF.
         document_id: UUID of the LegalDocument DB record.
-        short_name: Short reference name (e.g. "DV Act 2005").
-        doc_type: Document type string for citation formatting.
+        short_name: Short statute name (e.g. "DV Act 2005") — used in citations.
+        doc_type: Document type string.
+        db: Async DB session (if None, only returns chunk count — use for testing).
 
     Returns:
         Number of chunks indexed.
@@ -110,139 +143,161 @@ async def ingest_legal_pdf(
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
-    logger.info(
-        "rag_ingest_start",
-        document_id=document_id,
-        short_name=short_name,
-        pdf_path=str(pdf_path),
-    )
+    logger.info("rag_ingest_start", document_id=document_id, short_name=short_name)
 
-    # Load and parse PDF
-    reader = SimpleDirectoryReader(
-        input_files=[str(pdf_path)],
-        filename_as_id=True,
-    )
-    documents = reader.load_data()
+    reader = PdfReader(str(pdf_path))
+    total_pages = len(reader.pages)
 
-    # Attach metadata for citations — this propagates to every chunk
-    for doc in documents:
-        doc.metadata.update({
-            "document_id": document_id,
-            "source": short_name,
-            "doc_type": doc_type,
-        })
-        doc.excluded_embed_metadata_keys = ["file_path", "file_name", "file_type"]
-        doc.excluded_llm_metadata_keys = ["file_path", "file_name", "file_type"]
+    all_chunks: list[dict[str, Any]] = []
 
-    # Chunk with sentence-aware splitter
-    splitter = SentenceSplitter(chunk_size=512, chunk_overlap=50)
-    nodes = splitter.get_nodes_from_documents(documents)
+    for page_num, page in enumerate(reader.pages, start=1):
+        page_text = page.extract_text() or ""
+        if not page_text.strip():
+            continue
 
-    # Attach citation to each node
-    for i, node in enumerate(nodes):
-        page_num = node.metadata.get("page_label", "?")
-        node.metadata["source_citation"] = (
-            f"{short_name}, Page {page_num}"
-        )
+        chunks = _chunk_text(page_text)
+        for chunk_idx, chunk_text in enumerate(chunks):
+            all_chunks.append({
+                "document_id": document_id,
+                "page_number": page_num,
+                "chunk_index": chunk_idx,
+                "content": chunk_text,
+                "source_citation": f"{short_name}, Page {page_num}",
+            })
 
-    vector_store = _get_vector_store("legal_document_chunks")
-    storage_context = StorageContext.from_defaults(vector_store=vector_store)
+    if not all_chunks:
+        raise ValueError(f"No text extracted from PDF: {pdf_path}")
 
-    VectorStoreIndex(
-        nodes=nodes,
-        storage_context=storage_context,
-        show_progress=True,
-    )
+    # Batch embed all chunks
+    texts = [c["content"] for c in all_chunks]
+    logger.info("rag_embedding_start", chunk_count=len(texts))
+    embeddings = embed_texts(texts)
+    logger.info("rag_embedding_complete", chunk_count=len(embeddings))
 
-    chunk_count = len(nodes)
+    # Insert into pgvector table
+    if db is not None:
+        # Create table if not exists (LlamaIndex-independent)
+        await db.execute(text("""
+            CREATE TABLE IF NOT EXISTS legal_statute_chunks (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                document_id UUID NOT NULL,
+                page_number INTEGER,
+                chunk_index INTEGER,
+                content TEXT NOT NULL,
+                source_citation VARCHAR(500),
+                embedding vector(384),
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_legal_statute_chunks_document_id
+                ON legal_statute_chunks(document_id);
+            CREATE INDEX IF NOT EXISTS idx_legal_statute_chunks_embedding
+                ON legal_statute_chunks USING ivfflat (embedding vector_cosine_ops)
+                WITH (lists = 50);
+        """))
+
+        for chunk, embedding in zip(all_chunks, embeddings):
+            await db.execute(
+                text("""
+                    INSERT INTO legal_statute_chunks
+                        (document_id, page_number, chunk_index, content, source_citation, embedding)
+                    VALUES
+                        (:doc_id, :page, :idx, :content, :citation, CAST(:emb AS vector))
+                """),
+                {
+                    "doc_id": chunk["document_id"],
+                    "page": chunk["page_number"],
+                    "idx": chunk["chunk_index"],
+                    "content": chunk["content"],
+                    "citation": chunk["source_citation"],
+                    "emb": str(embedding),
+                },
+            )
+
+        await db.flush()
+
     logger.info(
         "rag_ingest_complete",
         document_id=document_id,
-        short_name=short_name,
-        chunk_count=chunk_count,
+        chunk_count=len(all_chunks),
+        pages_processed=total_pages,
     )
 
-    return chunk_count
+    return len(all_chunks)
 
 
 async def query_dv_act(
     query: str,
     top_k: int = 5,
     document_id: str | None = None,
+    db: AsyncSession | None = None,
 ) -> list[dict[str, Any]]:
-    """Query the indexed DV Act for relevant sections.
+    """Query indexed DV Act for relevant sections using pgvector cosine similarity.
 
     Args:
-        query: Natural language query describing the legal need.
-               e.g. "protection order for physical domestic violence"
-               e.g. "maintenance relief for wife and children"
+        query: Natural language query (e.g. "protection order for physical violence").
         top_k: Number of relevant sections to retrieve.
         document_id: Filter to specific document UUID (optional).
+        db: Async DB session. If None, returns empty list (graceful degradation).
 
     Returns:
-        List of dicts with keys: ``text``, ``source_citation``, ``score``.
-        Ordered by relevance (highest score first).
+        List of dicts: ``text``, ``source_citation``, ``score``, ``page``.
+        Ordered by similarity descending.
     """
-    logger.info("rag_query_start", top_k=top_k, document_id=document_id)
+    if db is None:
+        return []
 
-    vector_store = _get_vector_store("legal_document_chunks")
-    storage_context = StorageContext.from_defaults(vector_store=vector_store)
-    index = VectorStoreIndex.from_vector_store(
-        vector_store=vector_store,
-        storage_context=storage_context,
+    query_embedding = embed_single(query)
+
+    filter_clause = "AND document_id = :doc_id" if document_id else ""
+
+    result = await db.execute(
+        text(f"""
+            SELECT
+                content,
+                source_citation,
+                page_number,
+                document_id::text,
+                1 - (embedding <=> CAST(:embedding AS vector)) AS similarity
+            FROM legal_statute_chunks
+            WHERE 1=1 {filter_clause}
+            ORDER BY embedding <=> CAST(:embedding AS vector)
+            LIMIT :top_k
+        """),
+        {
+            "embedding": str(query_embedding),
+            "top_k": top_k,
+            **({"doc_id": document_id} if document_id else {}),
+        },
     )
 
-    retriever = index.as_retriever(similarity_top_k=top_k)
+    rows = result.fetchall()
+    results = [
+        {
+            "text": row.content,
+            "source_citation": row.source_citation or "DV Act 2005",
+            "score": float(row.similarity),
+            "page": row.page_number,
+            "document_id": row.document_id,
+        }
+        for row in rows
+    ]
 
-    # Build filter if document_id specified
-    nodes: list[NodeWithScore] = await retriever.aretrieve(query)
-
-    results = []
-    for node_with_score in nodes:
-        node: TextNode = node_with_score.node  # type: ignore[assignment]
-        results.append({
-            "text": node.get_content(),
-            "source_citation": node.metadata.get(
-                "source_citation", "DV Act 2005"
-            ),
-            "score": float(node_with_score.score or 0.0),
-            "page": node.metadata.get("page_label", "?"),
-            "document_id": node.metadata.get("document_id"),
-        })
-
-    logger.info(
-        "rag_query_complete",
-        results_count=len(results),
-        top_score=results[0]["score"] if results else 0.0,
-    )
-
+    logger.info("rag_query_complete", results_count=len(results))
     return results
 
 
-def build_legal_context_string(
-    retrieved_sections: list[dict[str, Any]],
-) -> str:
-    """Format retrieved legal sections into a string for LLM prompt injection.
+def build_legal_context_string(retrieved_sections: list[dict[str, Any]]) -> str:
+    """Format retrieved legal sections into a prompt-ready string.
 
     Args:
         retrieved_sections: Output from query_dv_act().
 
     Returns:
-        Formatted string with section text and citations.
-        Example:
-            [SOURCE: DV Act 2005, Page 12]
-            Any aggrieved person who is, or has been, in a domestic relationship...
-
-            [SOURCE: DV Act 2005, Page 15]
-            The Magistrate may, on being satisfied that domestic violence has taken place...
+        Formatted string with citations ready for LLM context injection.
     """
     if not retrieved_sections:
         return "No specific law found in provided grounding."
-
-    parts = []
-    for section in retrieved_sections:
-        parts.append(
-            f"[SOURCE: {section['source_citation']}]\n{section['text']}"
-        )
-
-    return "\n\n".join(parts)
+    return "\n\n".join(
+        f"[SOURCE: {s['source_citation']}]\n{s['text']}"
+        for s in retrieved_sections
+    )
