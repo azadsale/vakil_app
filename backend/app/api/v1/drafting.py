@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from app.database import get_db
-from app.models.case import Case
+from app.models.case import Case, CaseType, CaseStatus
 from app.models.client_statement import ClientStatement, StatementLanguage, StatementStatus
 from app.models.draft_petition import DraftPetition, DraftStatus
 from app.services.draft_service import DraftGenerationError, generate_dv_petition_draft
@@ -216,11 +216,25 @@ async def generate_draft(
     if statement.user_id != current_user:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # Validate case exists and belongs to user
+    # Auto-create the case if it doesn't exist yet.
+    # The facts page generates a fresh UUID for every session; we honour it
+    # by creating a minimal DV case record on first use.
     case = await db.get(Case, case_id)
     if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    if case.user_id != current_user:
+        from datetime import date as _date
+        case = Case(
+            id=case_id,
+            title=f"DV Petition — {_date.today().strftime('%d %b %Y')}",
+            case_type=CaseType.FAMILY,
+            court_name="Family Court",
+            court_district="Raigad",
+            status=CaseStatus.ACTIVE,
+            user_id=current_user,
+        )
+        db.add(case)
+        await db.flush()
+        logger.info("case_auto_created", case_id=str(case_id), user_id=str(current_user))
+    elif case.user_id != current_user:
         raise HTTPException(status_code=403, detail="Access denied to case")
 
     # Parse pre-extracted facts if provided

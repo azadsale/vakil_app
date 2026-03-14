@@ -18,15 +18,18 @@ TEMPLATE_EMBEDDING_DIM = 384   # sentence-transformers/all-MiniLM-L6-v2 (local, 
 
 
 class TemplateType(str, Enum):
-    """Type of legal petition template."""
+    """Type of legal petition template.
 
-    DV_PETITION = "dv_petition"           # Sec 12 DV Act — main application
-    DV_PROTECTION_ORDER = "dv_protection"  # Sec 18 relief
-    DV_RESIDENCE_ORDER = "dv_residence"    # Sec 19 relief
-    DV_MONETARY_RELIEF = "dv_monetary"     # Sec 20 relief
-    DV_CUSTODY_ORDER = "dv_custody"        # Sec 21 relief
-    DV_COMPENSATION = "dv_compensation"    # Sec 22 relief
-    GENERAL = "general"
+    Values MUST match the PostgreSQL templatetype enum exactly (case-sensitive).
+    """
+
+    DV_PETITION = "DV_PETITION"                   # Sec 12 DV Act — main application
+    DV_PROTECTION_ORDER = "DV_PROTECTION_ORDER"   # Sec 18 relief
+    DV_RESIDENCE_ORDER = "DV_RESIDENCE_ORDER"     # Sec 19 relief
+    DV_MONETARY_RELIEF = "DV_MONETARY_RELIEF"     # Sec 20 relief
+    DV_CUSTODY_ORDER = "DV_CUSTODY_ORDER"         # Sec 21 relief
+    DV_COMPENSATION = "DV_COMPENSATION"           # Sec 22 relief
+    GENERAL = "GENERAL"
 
 
 class LawyerTemplate(SQLModel, table=True):

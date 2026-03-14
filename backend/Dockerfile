@@ -11,11 +11,13 @@ FROM python:3.11-slim AS base
 
 WORKDIR /app
 
-# System dependencies for psycopg2 async driver, cryptography, and pillow (OCR)
+# System dependencies for psycopg2 async driver, cryptography, pillow (OCR),
+# and ffmpeg (audio format conversion for Sarvam AI — webm → wav)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
     curl \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip and install uv for fast dependency resolution
