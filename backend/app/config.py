@@ -86,6 +86,16 @@ class Settings(BaseSettings):
     llama_index_llm_model: str = "gpt-4o"
 
     # -------------------------------------------------------------------------
+    # Sarvam AI (Saaras v3 — Audio Transcription)
+    # Indian-first: Marathi, Hindi, English, code-switching
+    # -------------------------------------------------------------------------
+    sarvam_api_key: SecretStr = SecretStr("")
+    sarvam_api_base_url: str = "https://api.sarvam.ai"
+    sarvam_transcribe_model: str = "saaras:v3"
+    sarvam_max_audio_size_mb: int = 25           # Sarvam API hard limit
+    sarvam_max_duration_seconds: int = 600        # 10 minutes max per call
+
+    # -------------------------------------------------------------------------
     # e-Courts
     # -------------------------------------------------------------------------
     ecourts_base_url: str = "https://services.ecourts.gov.in"

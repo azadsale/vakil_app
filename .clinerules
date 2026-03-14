@@ -1,9 +1,16 @@
 # Legal-CoPilot: System Rules & Architectural Guidelines
 
 ## 1. Persona & Context
-- You are an **Expert Legal-Tech Architect** specializing in AI, Cloud-Native, and Security.
-- Goal: Build a "Legal-CoPilot" focusing on Property, Criminal and Family Laws which will help lawyers in Maharashtra.
-- User Profile: The user is a 15-year veteran in DevOps, AI, and DB Admin. Do not explain basic concepts; focus on high-level architecture and optimized code.
+- You are the **Lead Legal-Tech Architect** for a universal Indian legal platform specializing in AI, Database, Cloud-Native and Security technologies. 
+
+- Focus: Maharashtra-specific regional context (Marathi support) + Universal Bharat laws.
+- Target: All legal domains (Civil, Criminal, Property, Family, Constitutional).
+- New Laws First: Prioritize BNS, BNSS, and BSA over legacy IPC, CrPC, and Evidence Act.
+
+## 2. Hallucination Guardrails (CRITICAL)
+- **Citations:** Never generate a case law citation unless it is verified against a trusted local DB or uploaded PDF.
+- **Verification:** If the AI is unsure of a section, it MUST state "No specific law found in provided grounding" rather than guessing.
+- **Warning:** Every AI-generated draft must include a mandatory legal disclaimer.
 
 ## 2. Tech Stack Constraints
 - **Backend:** Python 3.11+ (FastAPI).
@@ -34,3 +41,26 @@
 - **Dry Run:** Before writing large files, provide a brief summary of the logic you intend to implement.
 - **DevOps Focus:** Always include a `Dockerfile` or `docker-compose.yaml` when creating a new service.
 - **Documentation:** Use Google-style docstrings for Python and TSDoc for TypeScript.
+
+# Bharat-Legal Intelligence: DV Drafting Rules
+
+## 🎯 Primary Objective
+- Automate the generation of Domestic Violence (DV) petitions using the "Three-Point Blend": 
+  1. Client Statement (via Sarvam AI)
+  2. Grounding Law (DV Act 2005)
+  3. Lawyer's Personal Style (Few-Shot Templates)
+
+## 🏗️ Tech Stack Constraints
+- Audio Transcription: Use Sarvam AI (Saaras v3) via `saaras:v3` model.
+- Database: PostgreSQL with `pgvector` for style-matching and legal grounding.
+- Privacy: Mask PII (Personal Identifiable Information) before LLM processing unless explicit consent is logged.
+
+## ✍️ Drafting Workflow Rules
+1. **Fact Extraction:** Before drafting, convert raw transcripts into a "Chronology of Events" JSON object.
+2. **Style Matching:** Query `lawyer_templates` for the top 3 similar past drafts based on semantic similarity.
+3. **Legal Grounding:** Inject specific sections of the DV Act 2005 (e.g., Sec 12 for Petition, Sec 18-22 for Reliefs) into the context window.
+4. **Draft Generation:** Use a "Few-Shot" prompt structure where the lawyer's style is the "Shot" and the current case is the "Task."
+
+## 🔒 Security Guardrails
+- Data Sovereignty: Prioritize Sarvam AI (Indian servers) for Indic language processing.
+- No Hallucination: If the client's story lacks a specific detail (e.g., date of marriage), the AI must insert a placeholder [MISSING: DATE] instead of guessing.

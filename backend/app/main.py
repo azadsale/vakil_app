@@ -10,8 +10,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.v1.router import api_router
 from app.config import get_settings
 from app.database import engine
+from app.services.rag_service import configure_llama_index
 from app.utils.logging import configure_logging, get_logger
 
 settings = get_settings()
@@ -38,6 +40,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         environment=settings.environment,
         service="vakil-backend",
     )
+
+    # Configure LlamaIndex (embedding model + LLM)
+    if settings.openai_api_key.get_secret_value():
+        configure_llama_index()
+    else:
+        logger.warning("openai_api_key_not_set", msg="RAG and drafting features disabled")
 
     # Verify DB is reachable (fail fast on misconfiguration)
     try:
@@ -95,10 +103,9 @@ def create_app() -> FastAPI:
     )
 
     # -------------------------------------------------------------------------
-    # Routers (v1) — registered here as services are built
+    # Routers (v1)
     # -------------------------------------------------------------------------
-    # from app.api.v1.router import api_router
-    # application.include_router(api_router, prefix="/api/v1")
+    application.include_router(api_router, prefix="/api/v1")
 
     # -------------------------------------------------------------------------
     # Health check endpoint — used by docker-compose healthcheck

@@ -19,9 +19,13 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from app.config import get_settings
 from app.models import (  # noqa: F401  # ensure models are registered
     Case,
+    ClientStatement,
     Document,
     DocumentChunk,
+    DraftPetition,
     Hearing,
+    LawyerTemplate,
+    LegalDocument,
     Party,
     User,
 )
