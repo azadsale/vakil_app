@@ -122,7 +122,10 @@ services:
     container_name: vakil_frontend
     restart: unless-stopped
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
+      # BACKEND_URL is read at runtime by next.config.mjs rewrites (server-side proxy)
+      BACKEND_URL: http://backend:8000
+      HOSTNAME: "0.0.0.0"
+      PORT: "3000"
     ports:
       - "3000:3000"
     depends_on:

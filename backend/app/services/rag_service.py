@@ -176,7 +176,7 @@ async def ingest_legal_pdf(
 
     # Insert into pgvector table
     if db is not None:
-        # Create table if not exists (LlamaIndex-independent)
+        # Create table and indexes via separate statements (asyncpg forbids multi-statement)
         await db.execute(text("""
             CREATE TABLE IF NOT EXISTS legal_statute_chunks (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -187,12 +187,16 @@ async def ingest_legal_pdf(
                 source_citation VARCHAR(500),
                 embedding vector(384),
                 created_at TIMESTAMPTZ DEFAULT NOW()
-            );
+            )
+        """))
+        await db.execute(text("""
             CREATE INDEX IF NOT EXISTS idx_legal_statute_chunks_document_id
-                ON legal_statute_chunks(document_id);
+                ON legal_statute_chunks(document_id)
+        """))
+        await db.execute(text("""
             CREATE INDEX IF NOT EXISTS idx_legal_statute_chunks_embedding
                 ON legal_statute_chunks USING ivfflat (embedding vector_cosine_ops)
-                WITH (lists = 50);
+                WITH (lists = 50)
         """))
 
         for chunk, embedding in zip(all_chunks, embeddings):

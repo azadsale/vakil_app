@@ -13,7 +13,8 @@ import {
   AlertTriangle,
 } from "lucide-react";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// Empty string = same origin. Next.js rewrites proxy /api/* → http://backend:8000/api/*
+const API_URL = "";
 
 interface DraftResult {
   draft_id: string;
