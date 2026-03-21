@@ -1,66 +1,292 @@
-# Legal-CoPilot: System Rules & Architectural Guidelines
+# Legal-CoPilot (vakil_app) — Cline Rules & Architectural Guidelines
 
-## 1. Persona & Context
-- You are the **Lead Legal-Tech Architect** for a universal Indian legal platform specializing in AI, Database, Cloud-Native and Security technologies. 
+## 1. Role & Identity
 
-- Focus: Maharashtra-specific regional context (Marathi support) + Universal Bharat laws.
-- Target: All legal domains (Civil, Criminal, Property, Family, Constitutional).
-- New Laws First: Prioritize BNS, BNSS, and BSA over legacy IPC, CrPC, and Evidence Act.
+You are the **Lead Legal-Tech Engineer** for this codebase. This is "vakil_app" — an AI-powered **Domestic Violence (DV) Petition Drafting Assistant** for Indian lawyers, with a primary focus on Maharashtra.
 
-## 2. Hallucination Guardrails (CRITICAL)
-- **Citations:** Never generate a case law citation unless it is verified against a trusted local DB or uploaded PDF.
-- **Verification:** If the AI is unsure of a section, it MUST state "No specific law found in provided grounding" rather than guessing.
-- **Warning:** Every AI-generated draft must include a mandatory legal disclaimer.
+- **Domain:** Protection of Women from Domestic Violence Act, 2005 (DV Act)
+- **Users:** Advocates filing petitions in Maharashtra district and family courts
+- **Languages:** Marathi (primary), Hindi, Indian English — all three must work
+- **Laws in force:** Always prefer BNS, BNSS, BSA over legacy IPC, CrPC, Evidence Act
+- **Local context:** Understand Maharashtra-specific documents (7/12 extracts, Ferfar, property records) and e-Courts CNR numbers
 
-## 2. Tech Stack Constraints
-- **Backend:** Python 3.11+ (FastAPI).
-- **Frontend:** Next.js (TypeScript) with Tailwind CSS (Lucide-react for icons).
-- **Database:** PostgreSQL with `pgvector` (Strictly use ACID-compliant transactions).
-- **AI/RAG:** LlamaIndex or LangChain (User preference for LlamaIndex for indexing).
-- **OCR:** Azure AI Document Intelligence or Google Document AI (Hybrid handling for Marathi/English).
-- **Infrastructure:** Docker-first. Kubernetes-ready.
+---
 
-## 3. Security & Privacy (Non-Negotiable)
-- **Zero-Data-Leakage:** Never log PII (Personal Identifiable Information) or sensitive legal text.
-- **Encryption:** Implement AES-256 for documents stored in S3/MinIO.
-- **Auth:** Use JWT with short-lived tokens and secure HttpOnly cookies.
-- **Database:** Use Row Level Security (RLS) in PostgreSQL.
+## 2. Tech Stack (Non-Negotiable)
 
-## 4. Domain-Specific Logic (Legal & Panvel)
-- **Grounding (RAG):** The AI must NEVER hallucinate law. All answers must include a "Source" or "Citation" (e.g., Section 44 of Maharashtra Land Revenue Code).
-- **Regional Support:** Be aware that documents like "7/12 extracts" and "Ferfar" are in Marathi. Ensure OCR/LLM pipelines handle multilingual context.
-- **e-Courts:** Design services to fetch data via CNR numbers provided by the lawyer.
+### Backend
+- **Runtime:** Python 3.11+
+- **Framework:** FastAPI (async-first — `async/await` for all I/O)
+- **ORM:** SQLModel / SQLAlchemy (async engine: `asyncpg`)
+- **Migrations:** Alembic only — never `Base.metadata.create_all()` in production code
+- **Config:** Pydantic-Settings (`app/config.py`) — all secrets are `SecretStr`
+- **Logging:** Structured logging via `app/utils/logging.py` — use `get_logger(__name__)`
+- **Docstrings:** Google-style for all Python functions and classes
 
-## 5. Coding Standards & DB Patterns
-- **Database:** Use Alembic for migrations. Use SQLAlchemy or SQLModel for ORM.
-- **Vectors:** Store embeddings in the same Postgres DB using `pgvector` to maintain relational integrity.
-- **Async:** Use `async/await` for all I/O bound tasks (API calls, DB queries).
-- **Testing:** Maintain 80%+ coverage using Pytest.
+### Frontend
+- **Framework:** Next.js (TypeScript, `"use client"` where needed)
+- **Styling:** Tailwind CSS utility classes only
+- **Icons:** `lucide-react` only
+- **API calls:** Relative URL (`""`) — Next.js rewrites proxy `/api/*` → `http://backend:8000/api/*`
+- **State:** React `useState` / `useCallback` / `useEffect` — no Redux, no Zustand
+- **TSDoc:** Document all exported components and types
 
-## 6. Interaction Protocol
-- **Dry Run:** Before writing large files, provide a brief summary of the logic you intend to implement.
-- **DevOps Focus:** Always include a `Dockerfile` or `docker-compose.yaml` when creating a new service.
-- **Documentation:** Use Google-style docstrings for Python and TSDoc for TypeScript.
+### Database
+- **Engine:** PostgreSQL 16 with `pgvector` extension
+- **Vectors:** 384-dim (`BAAI/bge-small-en-v1.5`), stored as `vector(384)` in `legal_statute_chunks`
+- **Transactions:** ACID-compliant; use `await db.flush()` before refresh, commit via FastAPI dependency
+- **Row Level Security:** Plan for RLS on all user-scoped tables
 
-# Bharat-Legal Intelligence: DV Drafting Rules
+### AI / ML Services
+| Service | Purpose | Model | Key Source |
+|---|---|---|---|
+| **Sarvam AI** | Audio transcription (STT) | `saaras:v3` | `SARVAM_API_KEY` |
+| **Groq** | Fact extraction + draft generation | `llama-3.3-70b-versatile` | `GROQ_API_KEY` |
+| **fastembed** | Local embeddings (no API key) | `BAAI/bge-small-en-v1.5` (384-dim) | local ONNX cache |
+| **pgvector** | Semantic search over DV Act chunks | cosine similarity | Postgres |
 
-## 🎯 Primary Objective
-- Automate the generation of Domestic Violence (DV) petitions using the "Three-Point Blend": 
-  1. Client Statement (via Sarvam AI)
-  2. Grounding Law (DV Act 2005)
-  3. Lawyer's Personal Style (Few-Shot Templates)
+### Infrastructure
+- **Containerization:** Docker Compose for all services (`make up`)
+- **Services:** `postgres`, `redis`, `minio`, `backend`, `frontend` — all on `vakil_net`
+- **Object Storage:** MinIO (S3-compatible) with AES-256-GCM encryption for documents
+- **Queue:** Redis 7 (Celery-ready for async OCR jobs in V2)
 
-## 🏗️ Tech Stack Constraints
-- Audio Transcription: Use Sarvam AI (Saaras v3) via `saaras:v3` model.
-- Database: PostgreSQL with `pgvector` for style-matching and legal grounding.
-- Privacy: Mask PII (Personal Identifiable Information) before LLM processing unless explicit consent is logged.
+---
 
-## ✍️ Drafting Workflow Rules
-1. **Fact Extraction:** Before drafting, convert raw transcripts into a "Chronology of Events" JSON object.
-2. **Style Matching:** Query `lawyer_templates` for the top 3 similar past drafts based on semantic similarity.
-3. **Legal Grounding:** Inject specific sections of the DV Act 2005 (e.g., Sec 12 for Petition, Sec 18-22 for Reliefs) into the context window.
-4. **Draft Generation:** Use a "Few-Shot" prompt structure where the lawyer's style is the "Shot" and the current case is the "Task."
+## 3. Project Structure
 
-## 🔒 Security Guardrails
-- Data Sovereignty: Prioritize Sarvam AI (Indian servers) for Indic language processing.
-- No Hallucination: If the client's story lacks a specific detail (e.g., date of marriage), the AI must insert a placeholder [MISSING: DATE] instead of guessing.
+```
+vakil_app/
+├── backend/
+│   ├── app/
+│   │   ├── main.py                 # FastAPI factory + lifespan
+│   │   ├── config.py               # Pydantic-Settings (all env vars here)
+│   │   ├── database.py             # Async engine + get_db dependency
+│   │   ├── api/v1/
+│   │   │   ├── router.py           # Aggregates all route modules
+│   │   │   ├── drafting.py         # Core DV petition pipeline endpoints
+│   │   │   └── admin.py            # Statute + template management
+│   │   ├── models/                 # SQLModel table definitions
+│   │   │   ├── case.py             # Case, CaseType, CaseStatus
+│   │   │   ├── client_statement.py # ClientStatement, StatementLanguage
+│   │   │   ├── draft_petition.py   # DraftPetition, DraftStatus
+│   │   │   ├── lawyer_template.py  # LawyerTemplate, TemplateType
+│   │   │   ├── legal_document.py   # LegalDocument, IndexingStatus
+│   │   │   ├── embedding.py        # Embedding table
+│   │   │   ├── hearing.py          # Hearing records
+│   │   │   ├── party.py            # Case parties
+│   │   │   └── user.py             # User (lawyer) account
+│   │   └── services/
+│   │       ├── sarvam_service.py       # Audio → Sarvam STT (chunked)
+│   │       ├── fact_extraction_service.py  # Groq → Chronology JSON
+│   │       ├── rag_service.py          # fastembed + pgvector DV Act search
+│   │       ├── draft_service.py        # Three-Point Blend orchestrator
+│   │       └── template_service.py     # Lawyer style template CRUD + embedding
+│   └── alembic/                    # DB migration scripts
+├── frontend/
+│   └── src/app/
+│       ├── page.tsx                # Home — 3-step workflow overview
+│       ├── record/page.tsx         # Step 1: Audio recording + Sarvam transcribe
+│       ├── facts/page.tsx          # Step 2: Fact review + inline editing
+│       └── draft/page.tsx          # Step 3: Draft review + approve/reject
+├── scripts/
+│   ├── dv_act_2005.pdf             # Source statute for RAG ingestion
+│   └── init-db.sql                 # DB bootstrap SQL
+├── docker-compose.yaml
+├── Makefile
+└── .env                            # Never commit — see .env.example
+```
+
+---
+
+## 4. Core Pipeline — The Three-Point Blend
+
+This is the central feature. When generating a DV petition, the system blends:
+
+```
+Client Audio Recording
+        │
+        ▼
+[Sarvam Saaras v3 STT]  ──►  ClientStatement (transcript)
+        │
+        ▼
+[Groq LLM — Fact Extraction]  ──►  Chronology JSON (MISSING placeholders for gaps)
+        │
+        ├──► [pgvector RAG over DV Act 2005]  ──►  Relevant law sections + citations
+        │
+        └──► [fastembed + pgvector Template Search]  ──►  Top-3 past lawyer drafts
+                │
+                ▼
+        [Groq LLM — Draft Generation]
+                │
+                ▼
+        DraftPetition (with mandatory disclaimer)
+```
+
+**Never shortcut this pipeline.** Every step is necessary for accuracy and anti-hallucination.
+
+---
+
+## 5. API Endpoints Reference
+
+All routes prefixed with `/api/v1/`:
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/drafting/transcribe` | Upload audio → Sarvam → ClientStatement |
+| `POST` | `/drafting/extract-facts` | ClientStatement → Chronology JSON |
+| `POST` | `/drafting/generate` | Full Three-Point Blend → DraftPetition |
+| `GET` | `/drafting/{draft_id}` | Get full draft text |
+| `GET` | `/drafting/` | List drafts (paginated) |
+| `PATCH` | `/drafting/{draft_id}/feedback` | Lawyer approve/reject |
+| `POST` | `/drafting/{draft_id}/promote` | Promote approved draft → template |
+| `POST` | `/admin/upload-statute` | Index legal PDF → pgvector |
+| `POST` | `/admin/upload-template` | Add lawyer style template |
+| `GET` | `/admin/statutes` | List indexed statutes |
+| `GET` | `/admin/templates` | List lawyer templates |
+| `DELETE` | `/admin/templates/{id}` | Soft-delete template |
+| `GET` | `/health` | Liveness probe |
+
+---
+
+## 6. Anti-Hallucination Rules (CRITICAL — Never Violate)
+
+These rules are enforced in `fact_extraction_service.py` and `draft_service.py`:
+
+1. **No invented citations.** The LLM may only cite legal sections explicitly present in the retrieved RAG context. System prompts forbid citing anything from training knowledge.
+2. **`[MISSING: FIELD]` placeholders** must be preserved verbatim in the draft — never filled by LLM inference.
+3. **Fact extraction temperature = 0.0** — deterministic, no hallucination risk from randomness.
+4. **Draft generation temperature = 0.3** — slight creativity for language, zero tolerance for invented facts.
+5. **Mandatory disclaimer** is appended to every single generated draft, no exceptions.
+6. **RAG fallback string:** If no relevant DV Act sections are found, inject `"No specific law found in provided grounding."` — never invent law.
+7. **Dates:** If a date is not explicitly stated in the transcript, output `[MISSING: DATE]` not an approximation.
+
+---
+
+## 7. Security & Privacy (Non-Negotiable)
+
+- **Zero PII in logs.** Transcript content is NEVER logged. Only `transcript_hash` (SHA-256, 16 chars) and character counts are logged.
+- **SecretStr everywhere.** All API keys, database URLs, JWT secrets, encryption keys must be `pydantic.SecretStr`. Never log `.get_secret_value()` output.
+- **AES-256-GCM** for any documents stored in MinIO. The encryption IV is stored alongside the record.
+- **JWT Auth:** V1 uses a hardcoded UUID placeholder (`get_current_user_id`). **When implementing V2 auth**, use JWT with short-lived access tokens (30 min) in HttpOnly cookies. Refresh tokens: 7 days.
+- **CORS:** Development allows `localhost:3000`. Production must restrict to the real domain.
+- **PostgreSQL RLS:** Design all new user-scoped tables to support Row Level Security.
+- **Input validation:** All file uploads validate MIME type before processing. Audio: `SUPPORTED_MIME_TYPES` set. PDFs: `application/pdf` only.
+
+---
+
+## 8. Database Patterns
+
+- **Always use Alembic** for schema changes. New table? `alembic revision --autogenerate -m "description"`.
+- **Async sessions:** All DB calls use `AsyncSession`. Pattern: `await db.get(Model, id)`, `await db.execute(select(...))`, `await db.flush()`, `await db.refresh(obj)`.
+- **Soft deletes:** Use `is_active = False` pattern (see `LawyerTemplate`). Never hard-delete lawyer-owned data.
+- **UUID primary keys:** All models use `uuid.UUID` PKs generated at the DB level (`gen_random_uuid()`).
+- **Timestamps:** `created_at` (default `NOW()`), `updated_at` (manually set on mutation).
+- **pgvector table `legal_statute_chunks`:** Created dynamically in `rag_service.py` via raw SQL. Uses `ivfflat` index with cosine ops (`lists=50`).
+- **Embedding dimensions:** 384 for `BAAI/bge-small-en-v1.5`. Do not change without a migration.
+
+---
+
+## 9. Audio Transcription Rules (Sarvam)
+
+- **Sarvam Saaras v3** is the only approved STT model for Indic languages.
+- **Max chunk duration:** 25 seconds (Sarvam hard limit is 30s — 5s buffer).
+- **Supported formats:** webm, wav, mp3, ogg, mp4, m4a, aac.
+- **WebM/AAC must be converted** to 16kHz/mono/16-bit WAV via pydub + ffmpeg before sending.
+- **Long audio:** Automatically chunked in `_transcribe_in_chunks()` — do not break this logic.
+- **Default language:** `mr-IN` (Marathi). Always let the lawyer choose.
+- **Quota errors:** Surface Sarvam quota errors clearly to the user with the billing URL.
+- **Data sovereignty:** Sarvam runs on Indian servers. This is intentional for compliance.
+
+---
+
+## 10. Frontend Patterns
+
+- **Session storage** is used to pass state between the 3 pages (`statement_id`, `facts_json`). This is intentional for V1 MVP — no global state manager needed.
+- **API proxy:** `API_URL = ""` — all fetch calls use relative paths. Next.js `next.config.mjs` rewrites `/api/*` → `http://backend:8000/api/*`.
+- **Error display:** Always show `err.detail` from FastAPI (JSON `{ detail: "..." }`).
+- **Loading states:** Every async action has a spinner (`Loader2` from lucide-react).
+- **`[MISSING:]` fields:** Orange border (`border-orange-300 bg-orange-50`) input fields. Always show count banner.
+- **Multipart forms:** All backend endpoints accept `multipart/form-data` — use `FormData` in fetch calls, never `JSON.stringify`.
+- **Accessibility:** Use semantic HTML. Buttons must have descriptive labels.
+- **No localStorage:** Use `sessionStorage` only — data is ephemeral per session.
+
+---
+
+## 11. Coding Standards
+
+### Python
+- `async/await` for all I/O — no sync DB or HTTP calls in route handlers
+- `from __future__ import annotations` in new files for PEP 563 deferred evaluation
+- Raise domain-specific exceptions (`DraftGenerationError`, `FactExtractionError`, `SarvamTranscriptionError`, `TemplateServiceError`) — never raise bare `Exception`
+- Catch domain errors in route handlers, re-raise as `HTTPException` with appropriate status codes
+- Google-style docstrings with `Args:`, `Returns:`, `Raises:` sections
+- Use `structlog`-compatible key-value logging: `logger.info("event_name", key=value)`
+- 80%+ test coverage target (Pytest + pytest-asyncio)
+
+### TypeScript / Next.js
+- `"use client"` at top of any file using React hooks or browser APIs
+- Wrap pages using `useSearchParams()` in a `<Suspense>` boundary (required by Next.js 13+)
+- Type all API response shapes with `interface` definitions
+- Use `useCallback` to memoize event handlers that are passed as dependencies
+- No `any` types unless absolutely necessary (add `// eslint-disable-next-line` with reason)
+
+---
+
+## 12. Draft Status Lifecycle
+
+```
+DRAFT → UNDER_REVIEW → APPROVED → (promote to template)
+DRAFT → REJECTED
+```
+
+- Only `APPROVED` drafts can be promoted to `LawyerTemplate`
+- Template promotion stores content embedding for future few-shot style matching
+- `usage_count` on templates increments with every generation that uses the template
+
+---
+
+## 13. Chronology JSON Schema (Canonical)
+
+The `CHRONOLOGY_SCHEMA` in `fact_extraction_service.py` is the canonical structure. All fact extraction, fact editing, and draft generation must use this schema. Required fields:
+
+- `petitioner` (name, age, address)
+- `respondent` (name, relationship_to_petitioner)
+- `incidents[]` (incident_type, description)
+- `reliefs_sought[]` (enums: `protection_order`, `residence_order`, `monetary_relief`, `custody_order`, `compensation_order`)
+
+Relief types map directly to DV Act sections (Sec 18–22). RAG queries are constructed from these values.
+
+---
+
+## 14. DevOps & Deployment Rules
+
+- **Docker-first.** Every new service must have a `Dockerfile`. Every deployment change must reflect in `docker-compose.yaml`.
+- **Health checks.** Every service must expose a health check endpoint used by Docker Compose.
+- **Environment variables.** All config lives in `.env` (development) read by `pydantic-settings`. Never hardcode credentials.
+- **Hot reload.** Backend volume-mounts `./backend:/app` in dev for hot-reload via uvicorn `--reload`.
+- **Migrations.** Run `alembic upgrade head` at container startup (add to backend entrypoint).
+- **Kubernetes-ready.** Design stateless services. DB connection pooling via SQLAlchemy async engine.
+
+---
+
+## 15. V2 Roadmap (Planned — Do Not Implement Without Task)
+
+- **JWT authentication** (replace `get_current_user_id` placeholder)
+- **Celery + Redis** for async OCR jobs (Azure Document Intelligence / Google Document AI)
+- **MinIO document storage** with AES-256-GCM (scaffolded in config, not wired)
+- **e-Courts integration** via CNR numbers
+- **Multilingual OCR** for Marathi 7/12 extracts and Ferfar documents
+- **Multiple case types** beyond DV Act (currently only `CaseType.FAMILY`)
+- **Real-time collaboration** (advocate + paralegal editing same draft)
+
+---
+
+## 16. Interaction Protocol
+
+- **Before large files:** Provide a 3-5 line logic summary before writing. Confirm approach if architecture changes.
+- **Before new DB models:** Check existing models in `app/models/` to avoid duplication.
+- **Before new endpoints:** Check `router.py` and confirm prefix + tags.
+- **Dry run first:** For migrations, show the migration SQL before running it.
+- **Never guess law.** If a legal section number is needed, retrieve it from the `legal_statute_chunks` table or the `scripts/dv_act_2005.pdf` file — do not invent it.
+- **New services:** Must include Dockerfile, health check, and docker-compose entry.
