@@ -20,7 +20,6 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from groq import AsyncGroq
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -31,6 +30,7 @@ from app.services.fact_extraction_service import (
     extract_facts_from_transcript,
     get_missing_fields,
 )
+from app.services.llm_service import LLMError, call_llm
 from app.services.rag_service import build_legal_context_string, embed_single, query_dv_act
 from app.services.template_service import (
     get_top_templates,
@@ -44,37 +44,68 @@ settings = get_settings()
 # ---------------------------------------------------------------------------
 # Draft Generation Prompt
 # ---------------------------------------------------------------------------
-DRAFT_GENERATION_SYSTEM_PROMPT = """You are an expert legal drafter specializing in Protection of Women from Domestic Violence Act, 2005 petitions for Indian courts.
+DRAFT_GENERATION_SYSTEM_PROMPT = """You are a senior advocate in Maharashtra specializing in Protection of Women from Domestic Violence Act, 2005 petitions. You draft petitions filed before Judicial Magistrate First Class courts.
 
-Your task is to draft a formal petition (application under Section 12 of the DV Act) based on:
-1. The client's facts (provided as structured JSON)
-2. Relevant legal provisions (retrieved from the DV Act — use ONLY these, do not cite from memory)
-3. A style reference (a past petition by the advocate — match this tone, structure, and language exactly)
+Your task: Draft a complete, detailed, court-ready petition under Section 12 of the DV Act, 2005.
 
-STRICT RULES:
-1. NEVER cite any legal section or case law not explicitly provided in the "LEGAL GROUNDING" section below.
-2. If the facts JSON contains "[MISSING: FIELD]", include it verbatim as a placeholder in the draft — do NOT invent values.
-3. Use formal legal language consistent with Maharashtra district court standards.
-4. Structure: Title → Court Header → Petitioner Details → Respondent Details → Background → Incidents (chronological) → Legal Basis → Reliefs Sought → Prayer Clause → Verification.
-5. Address the court as "Hon'ble Court" or "Your Honour".
-6. Use "the Respondent" not the person's name in the body (refer by name only in the header).
-7. Reliefs claimed must map ONLY to the sections present in the legal grounding.
-8. Do NOT add any facts not present in the JSON.
-9. End with the standard verification clause.
+INPUTS YOU WILL RECEIVE:
+1. CASE FACTS — structured JSON with petitioner/respondent details, incidents, reliefs
+2. LEGAL GROUNDING — relevant DV Act sections retrieved from the statute (use ONLY these)
+3. STYLE REFERENCE — sample petition(s) by the advocate (match structure, tone, numbering style exactly)
 
-OUTPUT: Return the complete petition text only. No commentary, no JSON wrapper."""
+MANDATORY RULES:
+1. NEVER cite any legal section not explicitly present in the LEGAL GROUNDING section.
+2. LANGUAGE: Write the ENTIRE petition in {language}. No mixing of languages.
+3. INCIDENTS — Each incident must be a separate numbered paragraph with:
+   - The specific date (or approximate period if exact date unknown)
+   - The type of violence (physical/verbal/economic/emotional)
+   - Detailed description in formal legal language (convert colloquial/Marathi speech to formal legal prose)
+   - Any witnesses or injuries mentioned
+   - FIR/police complaint details if mentioned
+   Do NOT summarise multiple incidents into one vague paragraph.
+4. RELIEF SECTION MAPPING — never use [MISSING] for these:
+   - protection_order → Section 18
+   - residence_order  → Section 19
+   - monetary_relief  → Section 20
+   - custody_order    → Section 21
+   - compensation_order → Section 22
+5. STRUCTURE (numbered, do not skip any section):
+   (a) Court Header — "IN THE COURT OF HON'BLE JUDICIAL MAGISTRATE, FIRST CLASS, [CITY]"
+   (b) Application title — "APPLICATION UNDER SECTION 12 OF THE PROTECTION OF WOMEN FROM DOMESTIC VIOLENCE ACT, 2005"
+   (c) Parties — Petitioner name/age/address, Respondent name/age/address/relationship
+   (d) Jurisdiction — why this court has jurisdiction
+   (e) Facts of the case — background (marriage, household, relationship dynamics)
+   (f) Acts of Domestic Violence — NUMBERED PARAGRAPHS, one per incident, detailed
+   (g) Legal provisions attracted — cite retrieved DV Act sections with explanation
+   (h) Reliefs sought — numbered list, each with correct section number
+   (i) Prayer clause — formal prayer to the court
+   (j) Verification — "I, [Name], do hereby verify…" with city and date
+6. Use [MISSING: FIELD] ONLY for names/addresses/dates genuinely absent from the facts JSON. Never for section numbers or standard legal phrases.
+7. The petition must be substantive — minimum 600 words. A short draft is unacceptable.
+8. Do NOT add facts not present in the JSON. Do NOT hallucinate names, dates, or amounts.
 
-DRAFT_GENERATION_USER_TEMPLATE = """CASE FACTS (Chronology of Events):
+OUTPUT: Complete petition text only. No JSON, no commentary, no preamble."""
+
+DRAFT_GENERATION_USER_TEMPLATE = """CASE FACTS (Chronology of Events JSON):
 {facts_json}
 
-LEGAL GROUNDING (DV Act 2005 — retrieved sections):
+---
+LEGAL GROUNDING (DV Act 2005 — retrieved sections, cite only these):
 {legal_context}
 
-STYLE REFERENCE (past petition by the advocate — match this tone and structure):
+---
+STYLE REFERENCE (advocate's sample petition — replicate this structure and tone exactly):
 {style_reference}
 
 ---
-Draft a complete Section 12 petition based on the above. Preserve all [MISSING: FIELD] placeholders exactly as-is."""
+DRAFT LANGUAGE: {language}
+
+Now draft the complete Section 12 DV Act petition. Remember:
+- Each incident = a separate numbered paragraph with date, type, and full description
+- Convert all colloquial/Marathi incident language into formal legal prose
+- Minimum 600 words
+- Correct section numbers for all reliefs
+- Draft entirely in {language}"""
 
 MANDATORY_DISCLAIMER = """
 ---
@@ -93,6 +124,7 @@ async def generate_dv_petition_draft(
     user_id: uuid.UUID,
     case_id: uuid.UUID,
     pre_extracted_facts: dict[str, Any] | None = None,
+    language: str = "english",
 ) -> DraftPetition:
     """Orchestrate the Three-Point Blend to generate a DV petition draft.
 
@@ -195,51 +227,37 @@ async def generate_dv_petition_draft(
     # ------------------------------------------------------------------
     # Step 4: Draft Generation
     # ------------------------------------------------------------------
-    api_key = settings.groq_api_key.get_secret_value()
-    if not api_key:
-        raise DraftGenerationError(
-            "GROQ_API_KEY not configured. Get a free key at https://console.groq.com"
-        )
-
-    client = AsyncGroq(api_key=api_key)
-
     user_prompt = DRAFT_GENERATION_USER_TEMPLATE.format(
         facts_json=json.dumps(facts, indent=2, ensure_ascii=False),
         legal_context=legal_context,
         style_reference=style_reference,
+        language=language,
     )
 
-    # Hash prompt for dedup
     prompt_hash = hashlib.sha256(user_prompt.encode()).hexdigest()
 
     logger.info(
         "draft_llm_call_start",
         case_id=str(case_id),
         prompt_hash=prompt_hash[:16],
-        model=settings.llama_index_llm_model,
         legal_sections_count=len(legal_sections_used),
         templates_used=len(template_ids_used),
     )
 
     try:
-        response = await client.chat.completions.create(
-            model=settings.groq_llm_model,
-            messages=[
-                {"role": "system", "content": DRAFT_GENERATION_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.3,  # slight creativity for natural language, not for facts
+        draft_text = await call_llm(
+            system_prompt=DRAFT_GENERATION_SYSTEM_PROMPT.format(language=language),
+            user_prompt=user_prompt,
+            temperature=0.3,
             max_tokens=8192,
+            json_mode=False,
         )
+    except LLMError as exc:
+        raise DraftGenerationError(f"LLM generation failed: {exc}") from exc
     except Exception as exc:
-        logger.error(
-            "draft_llm_call_failed",
-            case_id=str(case_id),
-            error=str(exc),
-        )
+        logger.error("draft_llm_call_failed", case_id=str(case_id), error=str(exc))
         raise DraftGenerationError(f"LLM generation failed: {exc}") from exc
 
-    draft_text = response.choices[0].message.content or ""
     if not draft_text:
         raise DraftGenerationError("LLM returned empty draft")
 
@@ -373,8 +391,8 @@ def _format_templates_as_shots(
     """
     shots = []
     for i, template in enumerate(templates, 1):
-        excerpt = template["content"][:2000]
-        if len(template["content"]) > 2000:
+        excerpt = template["content"][:4000]
+        if len(template["content"]) > 4000:
             excerpt += "\n... [excerpt — full template available]"
         shots.append(f"[STYLE EXAMPLE {i} — similarity: {template['similarity']:.2f}]\n{excerpt}")
 

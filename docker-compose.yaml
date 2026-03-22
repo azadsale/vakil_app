@@ -119,15 +119,20 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      target: dev                   # hot-reload dev stage
     container_name: vakil_frontend
     restart: unless-stopped
     environment:
-      # BACKEND_URL is read at runtime by next.config.mjs rewrites (server-side proxy)
       BACKEND_URL: http://backend:8000
       HOSTNAME: "0.0.0.0"
       PORT: "3000"
+      WATCHPACK_POLLING: "true"     # needed for file-watch inside Docker on macOS
     ports:
       - "3000:3000"
+    volumes:
+      - ./frontend:/app             # bind-mount source for instant hot-reload
+      - /app/node_modules           # keep container's node_modules, don't overwrite
+      - /app/.next                  # keep Next.js build cache inside container
     depends_on:
       - backend
     networks:

@@ -10,10 +10,12 @@ Endpoints:
     POST /drafting/{draft_id}/promote   — Promote approved draft to template
 """
 
+import asyncio
+import json
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
@@ -26,6 +28,11 @@ from app.services.fact_extraction_service import (
     FactExtractionError,
     extract_facts_from_transcript,
     get_missing_fields,
+)
+from app.services.document_extraction_service import (
+    DocumentExtractionError,
+    SUPPORTED_DOC_MIME_TYPES,
+    extract_text_from_document,
 )
 from app.services.sarvam_service import SarvamTranscriptionError, transcribe_upload_file
 from app.services.template_service import TemplateServiceError, promote_draft_to_template
@@ -127,6 +134,195 @@ async def transcribe_audio(
 
 
 # ---------------------------------------------------------------------------
+# POST /drafting/upload-document
+# ---------------------------------------------------------------------------
+@router.post("/upload-document", status_code=status.HTTP_202_ACCEPTED)
+async def upload_document(
+    background_tasks: BackgroundTasks,
+    db: DB,
+    current_user: CurrentUser,
+    document_file: UploadFile = File(..., description="PDF, DOCX, JPG, or PNG of client's written statement"),
+    case_id: uuid.UUID | None = Form(default=None),
+    language_code: str = Form(default="mr-IN"),
+) -> dict[str, Any]:
+    """Upload a client's written statement — returns a job_id immediately.
+
+    For typed PDFs/DOCX: completes quickly (seconds).
+    For scanned/CamScanner PDFs and images: OCR runs in the background.
+    Poll GET /drafting/ocr-status/{job_id} for live progress.
+
+    Returns:
+        {job_id, mode} — poll /ocr-status/{job_id} until status == "done".
+    """
+    mime_type = document_file.content_type or "application/octet-stream"
+    mime_base = mime_type.split(";")[0].strip().lower()
+
+    if mime_base not in {m.split(";")[0].strip() for m in SUPPORTED_DOC_MIME_TYPES}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unsupported file type: {mime_type}. Supported: PDF, DOCX, JPG, PNG, TIFF",
+        )
+
+    file_bytes = await document_file.read()
+    filename = document_file.filename or "statement.pdf"
+    job_id = str(uuid.uuid4())
+
+    # Kick off background processing — returns immediately
+    background_tasks.add_task(
+        _run_document_ocr_job,
+        job_id=job_id,
+        file_bytes=file_bytes,
+        mime_type=mime_type,
+        filename=filename,
+        language_code=language_code,
+        case_id=str(case_id) if case_id else None,
+        user_id=str(current_user),
+    )
+
+    return {"job_id": job_id, "status": "processing"}
+
+
+# ---------------------------------------------------------------------------
+# Background OCR worker
+# ---------------------------------------------------------------------------
+async def _run_document_ocr_job(
+    job_id: str,
+    file_bytes: bytes,
+    mime_type: str,
+    filename: str,
+    language_code: str,
+    case_id: str | None,
+    user_id: str,
+) -> None:
+    """Background task: run extraction, update Redis with progress, save statement."""
+    import redis.asyncio as aioredis  # type: ignore[import]
+    from app.config import get_settings
+    from app.database import AsyncSessionLocal as async_session_factory
+    from app.models.client_statement import StatementLanguage
+
+    settings = get_settings()
+    r = aioredis.from_url(settings.redis_url, decode_responses=True)
+
+    async def _set(key: str, val: Any) -> None:
+        await r.setex(f"ocr:{job_id}:{key}", 3600, json.dumps(val))  # 1hr TTL
+
+    await _set("status", "processing")
+    await _set("progress", {"current": 0, "total": 0, "filename": filename})
+
+    # Shared list so the thread can push updates; the main loop drains them
+    _progress_updates: list[dict] = []
+
+    def on_page_done(current: int, total: int) -> None:
+        _progress_updates.append({"current": current, "total": total, "filename": filename})
+
+    async def _flush_progress() -> None:
+        """Drain progress updates written by the OCR thread into Redis."""
+        while True:
+            await asyncio.sleep(1)
+            while _progress_updates:
+                update = _progress_updates.pop(0)
+                await _set("progress", update)
+
+    flush_task = asyncio.create_task(_flush_progress())
+
+    try:
+        extracted_text, method, char_count = await asyncio.to_thread(
+            extract_text_from_document,
+            file_bytes,
+            mime_type,
+            filename,
+            on_page_done,
+        )
+
+        # Persist statement in a new DB session
+        async with async_session_factory() as db:
+            statement = ClientStatement(
+                case_id=uuid.UUID(case_id) if case_id else None,
+                user_id=uuid.UUID(user_id),
+                language=StatementLanguage(language_code)
+                if language_code in [l.value for l in StatementLanguage]
+                else StatementLanguage.MARATHI,
+                transcript_raw=extracted_text,
+                transcript_clean=extracted_text,
+                audio_mime_type=mime_type,
+                status=StatementStatus.TRANSCRIBED,
+            )
+            db.add(statement)
+            await db.commit()
+            await db.refresh(statement)
+            statement_id = str(statement.id)
+
+        preview = extracted_text[:500] + "..." if len(extracted_text) > 500 else extracted_text
+        await _set("status", "done")
+        await _set("result", {
+            "statement_id": statement_id,
+            "extraction_method": method,
+            "char_count": char_count,
+            "transcript_preview": preview,
+            "transcript_length": char_count,
+            "language_detected": language_code,
+        })
+        logger.info("ocr_job_complete", job_id=job_id, method=method, chars=char_count)
+
+    except Exception as exc:
+        await _set("status", "error")
+        await _set("error", str(exc))
+        logger.error("ocr_job_failed", job_id=job_id, error=str(exc))
+    finally:
+        flush_task.cancel()
+        await r.aclose()
+
+
+# ---------------------------------------------------------------------------
+# GET /drafting/ocr-status/{job_id}
+# ---------------------------------------------------------------------------
+@router.get("/ocr-status/{job_id}")
+async def get_ocr_status(job_id: str) -> dict[str, Any]:
+    """Poll the status of a background OCR document extraction job.
+
+    Returns:
+        processing → {status, current_page, total_pages, filename}
+        done       → {status, statement_id, extraction_method, char_count, preview}
+        error      → {status, error}
+    """
+    import redis.asyncio as aioredis  # type: ignore[import]
+    from app.config import get_settings
+
+    settings = get_settings()
+    r = aioredis.from_url(settings.redis_url, decode_responses=True)
+
+    try:
+        raw_status = await r.get(f"ocr:{job_id}:status")
+        if raw_status is None:
+            raise HTTPException(status_code=404, detail="OCR job not found or expired")
+
+        job_status = json.loads(raw_status)
+
+        if job_status == "processing":
+            raw_progress = await r.get(f"ocr:{job_id}:progress")
+            progress = json.loads(raw_progress) if raw_progress else {}
+            return {
+                "status": "processing",
+                "current_page": progress.get("current", 0),
+                "total_pages": progress.get("total", 0),
+                "filename": progress.get("filename", ""),
+            }
+
+        if job_status == "done":
+            raw_result = await r.get(f"ocr:{job_id}:result")
+            result = json.loads(raw_result) if raw_result else {}
+            return {"status": "done", **result}
+
+        # error
+        raw_error = await r.get(f"ocr:{job_id}:error")
+        error_msg = json.loads(raw_error) if raw_error else "Unknown error"
+        return {"status": "error", "error": error_msg}
+
+    finally:
+        await r.aclose()
+
+
+# ---------------------------------------------------------------------------
 # POST /drafting/extract-facts
 # ---------------------------------------------------------------------------
 @router.post("/extract-facts")
@@ -191,6 +387,7 @@ async def generate_draft(
         default=None,
         description="Optional: JSON string of already-extracted facts",
     ),
+    language: str = Form(default="english", description="Draft language: 'english' or 'marathi'"),
 ) -> dict[str, Any]:
     """Run the full Three-Point Blend to generate a DV petition draft.
 
@@ -227,7 +424,7 @@ async def generate_draft(
             title=f"DV Petition — {_date.today().strftime('%d %b %Y')}",
             case_type=CaseType.FAMILY,
             court_name="Family Court",
-            court_district="Raigad",
+            court_district="Pune",
             status=CaseStatus.ACTIVE,
             user_id=current_user,
         )
@@ -256,6 +453,7 @@ async def generate_draft(
             user_id=current_user,
             case_id=case_id,
             pre_extracted_facts=facts_dict,
+            language=language,
         )
     except (DraftGenerationError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

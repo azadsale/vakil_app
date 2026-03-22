@@ -15,9 +15,8 @@ import json
 from datetime import datetime
 from typing import Any
 
-from groq import AsyncGroq
-
 from app.config import get_settings
+from app.services.llm_service import LLMError, call_llm
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -189,50 +188,31 @@ async def extract_facts_from_transcript(
     if not transcript or not transcript.strip():
         raise ValueError("Transcript cannot be empty for fact extraction")
 
-    api_key = settings.groq_api_key.get_secret_value()
-    if not api_key:
-        raise FactExtractionError(
-            "GROQ_API_KEY not configured. Get a free key at https://console.groq.com"
-        )
-
     # Hash transcript for dedup/caching (not the content itself)
     transcript_hash = hashlib.sha256(transcript.encode()).hexdigest()[:16]
 
     logger.info(
         "fact_extraction_start",
         case_id=case_id,
-        transcript_hash=transcript_hash,  # hash only, not content
+        transcript_hash=transcript_hash,
         transcript_char_count=len(transcript),
-        model=settings.groq_llm_model,
     )
 
-    client = AsyncGroq(api_key=api_key)
+    user_prompt = FACT_EXTRACTION_USER_PROMPT_TEMPLATE.format(transcript=transcript)
 
     try:
-        response = await client.chat.completions.create(
-            model=settings.groq_llm_model,
-            messages=[
-                {"role": "system", "content": FACT_EXTRACTION_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": FACT_EXTRACTION_USER_PROMPT_TEMPLATE.format(
-                        transcript=transcript
-                    ),
-                },
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.0,  # deterministic — no hallucination risk from randomness
+        raw_output = await call_llm(
+            system_prompt=FACT_EXTRACTION_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            temperature=0.0,
             max_tokens=4096,
+            json_mode=True,
         )
-    except Exception as exc:
-        logger.error(
-            "fact_extraction_llm_error",
-            case_id=case_id,
-            error=str(exc),
-        )
+    except LLMError as exc:
         raise FactExtractionError(f"LLM call failed: {exc}") from exc
-
-    raw_output = response.choices[0].message.content or "{}"
+    except Exception as exc:
+        logger.error("fact_extraction_llm_error", case_id=case_id, error=str(exc))
+        raise FactExtractionError(f"LLM call failed: {exc}") from exc
 
     try:
         facts: dict[str, Any] = json.loads(raw_output)

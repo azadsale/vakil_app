@@ -47,19 +47,20 @@ interface FullDraft {
 function DraftPageContent() {
   const searchParams = useSearchParams();
   const statementId = searchParams.get("statement_id") || sessionStorage.getItem("statement_id") || "";
-  const caseId = searchParams.get("case_id") || "";
+  const caseId = searchParams.get("case_id") || sessionStorage.getItem("case_id") || "";
 
+  const [language, setLanguage] = useState<"english" | "marathi">("english");
+  const [languageSelected, setLanguageSelected] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [draftMeta, setDraftMeta] = useState<DraftResult | null>(null);
   const [fullDraft, setFullDraft] = useState<FullDraft | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [feedbackMode, setFeedbackMode] = useState(false);
   const [feedbackText, setFeedbackText] = useState("");
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [feedbackDone, setFeedbackDone] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  const generateDraft = async () => {
+  const generateDraft = async (lang: "english" | "marathi") => {
     if (!statementId || !caseId) {
       setError("Missing statement ID or case ID");
       return;
@@ -71,6 +72,7 @@ function DraftPageContent() {
     const formData = new FormData();
     formData.append("statement_id", statementId);
     formData.append("case_id", caseId);
+    formData.append("language", lang);
 
     // Include pre-extracted facts if available
     const storedFacts = sessionStorage.getItem("facts_json");
@@ -105,11 +107,15 @@ function DraftPageContent() {
     }
   };
 
+  const handleLanguageSelect = (lang: "english" | "marathi") => {
+    setLanguage(lang);
+    setLanguageSelected(true);
+    generateDraft(lang);
+  };
+
   useEffect(() => {
-    if (statementId && caseId && !draftMeta) {
-      generateDraft();
-    }
-  }, [statementId, caseId]);
+    // Do not auto-generate — wait for language selection
+  }, []);
 
   const copyToClipboard = async () => {
     if (!fullDraft?.draft_text) return;
@@ -124,7 +130,7 @@ function DraftPageContent() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `DV_Petition_Draft_${draftMeta?.draft_id?.slice(0, 8)}.txt`;
+    a.download = `DV_Petition_Draft_${language}_${draftMeta?.draft_id?.slice(0, 8)}.txt`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -168,6 +174,34 @@ function DraftPageContent() {
         </div>
       )}
 
+      {/* Language selection — shown before generation starts */}
+      {statementId && caseId && !languageSelected && !generating && !draftMeta && (
+        <div className="bg-white rounded-xl border border-slate-200 p-8 text-center space-y-6">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-800">Select Draft Language</h2>
+            <p className="text-sm text-slate-500 mt-1">Choose the language for the petition draft</p>
+          </div>
+          <div className="flex gap-4 justify-center">
+            <button
+              onClick={() => handleLanguageSelect("english")}
+              className="flex-1 max-w-xs border-2 border-slate-200 hover:border-blue-500 hover:bg-blue-50 rounded-xl p-6 transition-all group"
+            >
+              <div className="text-3xl mb-2">🇬🇧</div>
+              <div className="font-semibold text-slate-800 group-hover:text-blue-700">English</div>
+              <div className="text-xs text-slate-400 mt-1">Standard legal English</div>
+            </button>
+            <button
+              onClick={() => handleLanguageSelect("marathi")}
+              className="flex-1 max-w-xs border-2 border-slate-200 hover:border-orange-500 hover:bg-orange-50 rounded-xl p-6 transition-all group"
+            >
+              <div className="text-3xl mb-2">🇮🇳</div>
+              <div className="font-semibold text-slate-800 group-hover:text-orange-700">मराठी</div>
+              <div className="text-xs text-slate-400 mt-1">Marathi (Maharashtra courts)</div>
+            </button>
+          </div>
+        </div>
+      )}
+
       {generating && (
         <div className="bg-white rounded-xl border border-slate-200 p-12 text-center space-y-4">
           <Loader2 className="animate-spin text-blue-600 mx-auto" size={48} />
@@ -175,6 +209,7 @@ function DraftPageContent() {
             <p className="font-semibold text-slate-800 text-lg">Generating petition draft...</p>
             <p className="text-slate-500 text-sm mt-2">
               Combining: Client facts + DV Act 2005 (RAG) + Lawyer style templates
+              {" · "}<span className="font-medium">{language === "marathi" ? "मराठी" : "English"}</span>
             </p>
           </div>
           <div className="flex justify-center gap-6 text-xs text-slate-400">
@@ -213,6 +248,10 @@ function DraftPageContent() {
             <div>
               <span className="text-slate-400">Version:</span>{" "}
               <span className="text-slate-700">v{draftMeta.version}</span>
+            </div>
+            <div>
+              <span className="text-slate-400">Language:</span>{" "}
+              <span className="text-slate-700">{language === "marathi" ? "मराठी" : "English"}</span>
             </div>
           </div>
 

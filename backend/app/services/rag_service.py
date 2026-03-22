@@ -229,6 +229,154 @@ async def ingest_legal_pdf(
     return len(all_chunks)
 
 
+def _chunk_text_raw(text: str, chunk_size: int = 800, overlap: int = 100) -> list[str]:
+    """Character-based chunker for OCR / multilingual text without Latin punctuation.
+
+    Splits first on blank lines (paragraphs), then on newlines, then by size.
+    Falls back to pure character sliding window when no structural breaks exist.
+
+    Args:
+        text: Raw OCR text (may be Hindi, Marathi, or mixed script).
+        chunk_size: Target characters per chunk.
+        overlap: Overlap characters between consecutive chunks.
+
+    Returns:
+        List of text chunks, each at least 50 characters long.
+    """
+    # 1. Try paragraph-level split first (blank lines)
+    paragraphs = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
+
+    # 2. If paragraphs are too large, further split on single newlines
+    lines: list[str] = []
+    for para in paragraphs:
+        if len(para) > chunk_size:
+            lines.extend(line.strip() for line in para.split("\n") if line.strip())
+        else:
+            lines.append(para)
+
+    # 3. Group lines into chunks of ~chunk_size chars with overlap
+    chunks: list[str] = []
+    current = ""
+    for line in lines:
+        if len(current) + len(line) + 1 > chunk_size and current:
+            chunks.append(current.strip())
+            # carry over tail for overlap
+            current = current[-overlap:] + "\n" + line if len(current) > overlap else line
+        else:
+            current = (current + "\n" + line).strip() if current else line
+
+    if current.strip():
+        chunks.append(current.strip())
+
+    # 4. If still just one giant chunk, use pure sliding window
+    if len(chunks) <= 1 and len(text) > chunk_size:
+        chunks = []
+        start = 0
+        while start < len(text):
+            end = min(start + chunk_size, len(text))
+            chunks.append(text[start:end].strip())
+            start += chunk_size - overlap
+
+    return [c for c in chunks if len(c) > 50]
+
+
+async def ingest_legal_text(
+    raw_text: str,
+    document_id: str,
+    short_name: str,
+    doc_type: str = "dv_act_2005",
+    db: AsyncSession | None = None,
+) -> int:
+    """Ingest raw (pre-extracted) text into pgvector — used for scanned PDFs after OCR.
+
+    Identical pipeline to ingest_legal_pdf but skips pypdf extraction step.
+    Uses a newline/paragraph-aware chunker that works for Hindi/Marathi OCR text.
+
+    Args:
+        raw_text: Full document text (e.g. produced by external OCR).
+        document_id: UUID of the LegalDocument DB record.
+        short_name: Short statute name — used in citations.
+        doc_type: Document type string.
+        db: Async DB session.
+
+    Returns:
+        Number of chunks indexed.
+    """
+    if not raw_text or not raw_text.strip():
+        raise ValueError("raw_text is empty — nothing to index")
+
+    logger.info("rag_text_ingest_start", document_id=document_id, short_name=short_name)
+
+    all_chunks: list[dict[str, Any]] = []
+    for chunk_idx, chunk_text in enumerate(_chunk_text_raw(raw_text)):
+        all_chunks.append({
+            "document_id": document_id,
+            "page_number": 1,          # OCR text is not page-split
+            "chunk_index": chunk_idx,
+            "content": chunk_text,
+            "source_citation": f"{short_name}, Chunk {chunk_idx + 1}",
+        })
+
+    if not all_chunks:
+        raise ValueError("Text too short to produce any chunks after chunking")
+
+    texts = [c["content"] for c in all_chunks]
+    logger.info("rag_embedding_start", chunk_count=len(texts))
+    embeddings = embed_texts(texts)
+    logger.info("rag_embedding_complete", chunk_count=len(embeddings))
+
+    if db is not None:
+        await db.execute(text("""
+            CREATE TABLE IF NOT EXISTS legal_statute_chunks (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                document_id UUID NOT NULL,
+                page_number INTEGER,
+                chunk_index INTEGER,
+                content TEXT NOT NULL,
+                source_citation VARCHAR(500),
+                embedding vector(384),
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """))
+        await db.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_legal_statute_chunks_document_id
+                ON legal_statute_chunks(document_id)
+        """))
+        await db.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_legal_statute_chunks_embedding
+                ON legal_statute_chunks USING ivfflat (embedding vector_cosine_ops)
+                WITH (lists = 50)
+        """))
+
+        for chunk, embedding in zip(all_chunks, embeddings):
+            await db.execute(
+                text("""
+                    INSERT INTO legal_statute_chunks
+                        (document_id, page_number, chunk_index, content, source_citation, embedding)
+                    VALUES
+                        (:doc_id, :page, :idx, :content, :citation, CAST(:emb AS vector))
+                """),
+                {
+                    "doc_id": chunk["document_id"],
+                    "page": chunk["page_number"],
+                    "idx": chunk["chunk_index"],
+                    "content": chunk["content"],
+                    "citation": chunk["source_citation"],
+                    "emb": str(embedding),
+                },
+            )
+
+        await db.flush()
+
+    logger.info(
+        "rag_text_ingest_complete",
+        document_id=document_id,
+        chunk_count=len(all_chunks),
+    )
+
+    return len(all_chunks)
+
+
 async def query_dv_act(
     query: str,
     top_k: int = 5,

@@ -10,6 +10,8 @@ Sarvam API docs: https://docs.sarvam.ai/api-reference/endpoints/speech-to-text
 """
 
 import io
+import os
+import tempfile
 from pathlib import Path
 
 import httpx
@@ -112,8 +114,27 @@ _SARVAM_MAX_DURATION_MS = 25_000   # 25 seconds per chunk (5s buffer)
 _CHUNK_OVERLAP_MS = 500            # 500ms overlap to avoid cutting words
 
 
+# Map MIME types → (pydub format string, file extension)
+# ffmpeg reads from a temp file so the extension must match the codec
+_MIME_TO_FORMAT: dict[str, tuple[str, str]] = {
+    "audio/mpeg":              ("mp3",  ".mp3"),
+    "audio/mp3":               ("mp3",  ".mp3"),
+    "audio/wav":               ("wav",  ".wav"),
+    "audio/x-wav":             ("wav",  ".wav"),
+    "audio/webm":              ("webm", ".webm"),
+    "audio/ogg":               ("ogg",  ".ogg"),
+    "audio/mp4":               ("mp4",  ".mp4"),
+    "audio/m4a":               ("mp4",  ".m4a"),
+    "audio/aac":               ("aac",  ".aac"),
+    "audio/x-m4a":             ("mp4",  ".m4a"),
+}
+
+
 def _load_audio_segment(audio_bytes: bytes, mime_type: str) -> "AudioSegment":
     """Load raw audio bytes into a pydub AudioSegment normalised to 16kHz/mono/16-bit.
+
+    Writes to a temp file with the correct extension so ffmpeg can identify
+    the codec reliably (avoids the 'cache:pipe:0' codec detection failure).
 
     Args:
         audio_bytes: Raw audio data.
@@ -129,17 +150,30 @@ def _load_audio_segment(audio_bytes: bytes, mime_type: str) -> "AudioSegment":
         raise SarvamTranscriptionError(
             "pydub is not installed. Cannot convert audio. Install pydub."
         )
+
+    # Normalise mime (strip codec params like "audio/webm;codecs=opus")
+    mime_base = mime_type.split(";")[0].strip().lower()
+    fmt, ext = _MIME_TO_FORMAT.get(mime_base, ("mp3", ".mp3"))
+
+    tmp_path = None
     try:
-        fmt = "webm" if "webm" in mime_type else mime_type.split("/")[-1].split(";")[0]
-        audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format=fmt)
+        # Write to a named temp file — ffmpeg uses the extension to detect codec
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+
+        audio = AudioSegment.from_file(tmp_path, format=fmt)
         # Sarvam saaras:v3 requires 16kHz / mono / 16-bit PCM
         return audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
     except Exception as exc:
-        logger.error("sarvam_audio_load_failed", error=str(exc))
+        logger.error("sarvam_audio_load_failed", mime=mime_type, fmt=fmt, error=str(exc))
         raise SarvamTranscriptionError(
             f"Audio load/conversion failed: {exc}. "
             "Ensure ffmpeg is installed in the container."
         ) from exc
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 def _export_segment_to_wav(segment: "AudioSegment") -> bytes:

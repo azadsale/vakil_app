@@ -15,7 +15,17 @@ COPY package.json ./
 RUN npm install --frozen-lockfile 2>/dev/null || npm install
 
 # ---------------------------------------------------------------------------
-# Stage 2: Builder
+# Stage 2: Development — hot-reload via `next dev`, source bind-mounted
+# ---------------------------------------------------------------------------
+FROM base AS dev
+ENV NODE_ENV=development
+ENV NEXT_TELEMETRY_DISABLED=1
+COPY --from=deps /app/node_modules ./node_modules
+EXPOSE 3000
+CMD ["npm", "run", "dev"]
+
+# ---------------------------------------------------------------------------
+# Stage 3: Builder
 # ---------------------------------------------------------------------------
 FROM base AS builder
 COPY --from=deps /app/node_modules ./node_modules

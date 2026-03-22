@@ -400,9 +400,10 @@ function FactsPageContent() {
           {/* Next step — always enabled when caseId is set */}
           <Link
             href={`/draft?statement_id=${result.statement_id}&case_id=${caseId}`}
-            onClick={() =>
-              sessionStorage.setItem("facts_json", JSON.stringify(editedFacts))
-            }
+            onClick={() => {
+              sessionStorage.setItem("facts_json", JSON.stringify(editedFacts));
+              sessionStorage.setItem("case_id", caseId);
+            }}
             className="flex items-center justify-center gap-2 w-full py-3 rounded-xl font-medium transition-colors bg-blue-600 hover:bg-blue-700 text-white"
           >
             Generate DV Petition Draft

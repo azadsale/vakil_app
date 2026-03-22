@@ -79,7 +79,15 @@ class Settings(BaseSettings):
     google_processor_id: str = ""
 
     # -------------------------------------------------------------------------
-    # Groq (Free LLM — OpenAI-compatible, get key at console.groq.com)
+    # Google Gemini (Free LLM — 1M tokens/min, get key at aistudio.google.com)
+    # Primary LLM — used when GEMINI_API_KEY is set (recommended)
+    # -------------------------------------------------------------------------
+    gemini_api_key: SecretStr = SecretStr("")
+    gemini_model: str = "gemini-1.5-flash"   # free tier, 1M TPM, 128K context
+
+    # -------------------------------------------------------------------------
+    # Groq (Fallback LLM — 12K tokens/min free, get key at console.groq.com)
+    # Used automatically when GEMINI_API_KEY is not set
     # -------------------------------------------------------------------------
     groq_api_key: SecretStr = SecretStr("")
     groq_api_base_url: str = "https://api.groq.com/openai/v1"

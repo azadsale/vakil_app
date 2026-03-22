@@ -65,6 +65,15 @@ shell-db:
 # Testing
 # ---------------------------------------------------------------------------
 
+seed-statutes:
+	@echo "▶  Seeding DV Act statutes into backend..."
+	$(DOCKER_COMPOSE) cp scripts/dv_act_2005.pdf $(BACKEND_SERVICE):/tmp/dv_act_2005.pdf
+	$(DOCKER_COMPOSE) cp scripts/Domestic_Voilence.pdf $(BACKEND_SERVICE):/tmp/Domestic_Voilence.pdf
+	$(DOCKER_COMPOSE) cp scripts/Draft_DV.pdf $(BACKEND_SERVICE):/tmp/Draft_DV.pdf
+$(DOCKER_COMPOSE) cp scripts/seed_statutes.py $(BACKEND_SERVICE):/tmp/seed_statutes.py
+	$(DOCKER_COMPOSE) exec $(BACKEND_SERVICE) python /tmp/seed_statutes.py --base-url http://localhost:8000
+	@echo "✅ Statutes indexed."
+
 test:
 	$(DOCKER_COMPOSE) exec $(BACKEND_SERVICE) pytest --cov=app --cov-report=term-missing --cov-fail-under=80 -v
 
@@ -106,6 +115,7 @@ help:
 	@echo "  build              Force rebuild all images"
 	@echo "  logs               Tail all service logs"
 	@echo "  logs-backend       Tail backend logs only"
+	@echo "  seed-statutes      Index DV Act PDFs into pgvector (run once after migrate)"
 	@echo "  migrate            Run pending Alembic migrations"
 	@echo "  migrate-new MSG='' Generate new Alembic revision"
 	@echo "  migrate-history    Show migration history"

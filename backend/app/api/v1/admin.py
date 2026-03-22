@@ -22,7 +22,7 @@ from sqlmodel import select
 from app.database import get_db
 from app.models.lawyer_template import LawyerTemplate, TemplateType
 from app.models.legal_document import IndexingStatus, LegalDocument, LegalDocumentType
-from app.services.rag_service import ingest_legal_pdf
+from app.services.rag_service import ingest_legal_pdf, ingest_legal_text
 from app.services.template_service import TemplateServiceError, add_template
 from app.utils.logging import get_logger
 
@@ -157,6 +157,98 @@ async def upload_statute(
         "total_chunks": chunk_count,
         "created_at": legal_doc.created_at.isoformat(),
         "message": f"Successfully indexed {chunk_count} chunks from {short_name}",
+    }
+
+
+# ---------------------------------------------------------------------------
+# POST /admin/upload-statute-text  (for scanned PDFs after OCR)
+# ---------------------------------------------------------------------------
+@router.post("/upload-statute-text", status_code=status.HTTP_201_CREATED)
+async def upload_statute_text(
+    db: DB,
+    current_user: CurrentUser,
+    title: str = Form(..., description="Full title of the statute"),
+    short_name: str = Form(..., description="Short name e.g. 'DV Case File'"),
+    raw_text: str = Form(..., description="Pre-extracted text (e.g. from OCR)"),
+    doc_type: LegalDocumentType = Form(default=LegalDocumentType.DV_ACT),
+    jurisdiction: str = Form(default="India"),
+    effective_date: str | None = Form(default=None),
+) -> dict[str, Any]:
+    """Index a statute from raw OCR-extracted text (for scanned PDFs without text layer).
+
+    Args:
+        db: Database session.
+        current_user: Authenticated lawyer UUID.
+        title: Full title of the statute.
+        short_name: Short reference name.
+        raw_text: Full OCR-extracted text of the document.
+        doc_type: Category from LegalDocumentType.
+        jurisdiction: Applicable jurisdiction.
+        effective_date: ISO date when statute came into force.
+
+    Returns:
+        Legal document metadata including chunk count.
+    """
+    if not raw_text or not raw_text.strip():
+        raise HTTPException(status_code=422, detail="raw_text must not be empty")
+
+    logger.info(
+        "statute_text_upload_start",
+        short_name=short_name,
+        text_length=len(raw_text),
+        uploaded_by=str(current_user),
+    )
+
+    legal_doc = LegalDocument(
+        title=title,
+        short_name=short_name,
+        doc_type=doc_type,
+        storage_path=f"statutes/{short_name.replace(' ', '_')}_ocr.txt",
+        encryption_iv="placeholder",
+        jurisdiction=jurisdiction,
+        effective_date=effective_date,
+        indexing_status=IndexingStatus.INDEXING,
+        uploaded_by=current_user,
+    )
+    db.add(legal_doc)
+    await db.flush()
+    await db.refresh(legal_doc)
+
+    try:
+        chunk_count = await ingest_legal_text(
+            raw_text=raw_text,
+            document_id=str(legal_doc.id),
+            short_name=short_name,
+            doc_type=doc_type.value,
+            db=db,
+        )
+    except Exception as exc:
+        legal_doc.indexing_status = IndexingStatus.FAILED
+        db.add(legal_doc)
+        logger.error("statute_text_indexing_failed", document_id=str(legal_doc.id), error=str(exc))
+        raise HTTPException(status_code=500, detail=f"Indexing failed: {exc}") from exc
+
+    legal_doc.indexing_status = IndexingStatus.INDEXED
+    legal_doc.total_chunks = chunk_count
+    legal_doc.updated_at = datetime.utcnow()
+    db.add(legal_doc)
+
+    logger.info(
+        "statute_text_upload_complete",
+        document_id=str(legal_doc.id),
+        short_name=short_name,
+        chunk_count=chunk_count,
+    )
+
+    return {
+        "document_id": str(legal_doc.id),
+        "title": legal_doc.title,
+        "short_name": legal_doc.short_name,
+        "doc_type": legal_doc.doc_type.value,
+        "indexing_status": legal_doc.indexing_status.value,
+        "total_chunks": chunk_count,
+        "created_at": legal_doc.created_at.isoformat(),
+        "message": f"Successfully indexed {chunk_count} chunks from {short_name} (OCR text)",
     }
 
 

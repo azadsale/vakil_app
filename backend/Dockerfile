@@ -18,6 +18,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     curl \
     ffmpeg \
+    tesseract-ocr \
+    tesseract-ocr-mar \
+    tesseract-ocr-hin \
+    tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip and install uv for fast dependency resolution
