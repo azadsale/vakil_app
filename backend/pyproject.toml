@@ -39,7 +39,8 @@ dependencies = [
     # Groq — free API (get key at console.groq.com)
     "groq>=0.11.0,<1.0.0",
     # Google Gemini — free API, 1M tokens/min (get key at aistudio.google.com)
-    "google-generativeai>=0.8.0,<1.0.0",
+    # NOTE: google-generativeai is deprecated. Use google-genai (new SDK).
+    "google-genai>=1.0.0,<2.0.0",
 
     # --- Embeddings (fastembed — ONNX, ~100MB, no torch, no API key) ---
     "fastembed>=0.3.0,<0.5.0",
@@ -51,6 +52,7 @@ dependencies = [
     "python-docx>=1.1.0,<2.0.0",
     "pytesseract>=0.3.10,<0.4.0",
     "pymupdf>=1.24.0,<2.0.0",
+    "Pillow>=10.0.0,<12.0.0",           # image rendering for PDF OCR pages
 
     # --- Audio Processing (webm → wav conversion for Sarvam AI) ---
     "pydub>=0.25.1,<0.26.0",

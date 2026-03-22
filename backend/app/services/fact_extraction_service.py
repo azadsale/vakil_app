@@ -214,6 +214,36 @@ async def extract_facts_from_transcript(
         logger.error("fact_extraction_llm_error", case_id=case_id, error=str(exc))
         raise FactExtractionError(f"LLM call failed: {exc}") from exc
 
+    # Empty response usually means Gemini's safety filter silently blocked the output.
+    # Retry once with json_mode=False and extract JSON from the text response.
+    if not raw_output or not raw_output.strip():
+        logger.warning(
+            "fact_extraction_empty_response_retrying",
+            case_id=case_id,
+            note="Gemini returned empty — retrying with json_mode=False",
+        )
+        try:
+            raw_output = await call_llm(
+                system_prompt=FACT_EXTRACTION_SYSTEM_PROMPT
+                    + "\n\nIMPORTANT: Wrap your JSON in ```json ... ``` markers.",
+                user_prompt=user_prompt,
+                temperature=0.0,
+                max_tokens=4096,
+                json_mode=False,
+            )
+        except Exception as exc2:
+            raise FactExtractionError(f"LLM retry also failed: {exc2}") from exc2
+
+    # Strip markdown fences if present (```json ... ```)
+    raw_output = raw_output.strip()
+    if raw_output.startswith("```"):
+        # Remove opening fence
+        raw_output = raw_output.split("\n", 1)[-1] if "\n" in raw_output else raw_output[3:]
+        # Remove closing fence
+        if raw_output.endswith("```"):
+            raw_output = raw_output[:-3]
+        raw_output = raw_output.strip()
+
     try:
         facts: dict[str, Any] = json.loads(raw_output)
     except json.JSONDecodeError as exc:
@@ -221,6 +251,7 @@ async def extract_facts_from_transcript(
             "fact_extraction_json_parse_error",
             case_id=case_id,
             error=str(exc),
+            raw_preview=raw_output[:200],
         )
         raise FactExtractionError(
             f"LLM returned invalid JSON: {exc}"

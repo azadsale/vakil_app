@@ -181,6 +181,64 @@ const SECTION_LABELS: Record<string, string> = {
   additional_facts: "📝 Additional Facts",
 };
 
+// Maps JSON field paths → plain-English label the lawyer sees
+// Covers both nested paths (petitioner.name) and flat paths (name) for robustness
+const FIELD_LABELS: Record<string, string> = {
+  // Nested paths (correct schema)
+  "petitioner.name":                         "Petitioner's full name",
+  "petitioner.age":                          "Petitioner's age",
+  "petitioner.address":                      "Petitioner's current address",
+  "petitioner.occupation":                   "Petitioner's occupation",
+  "respondent.name":                         "Respondent's (husband's) full name",
+  "respondent.age":                          "Respondent's age",
+  "respondent.address":                      "Respondent's current address",
+  "respondent.occupation":                   "Respondent's occupation",
+  "respondent.relationship_to_petitioner":   "Relationship to petitioner",
+  "shared_household.address":                "Address of shared household",
+  "shared_household.ownership":              "Who owns the shared house",
+  "shared_household.duration_of_residence":  "How long they lived together",
+  "relationship_details.date_of_marriage":   "Date of marriage",
+  "relationship_details.place_of_marriage":  "Place of marriage",
+  "relationship_details.marriage_type":      "Type of marriage (registered / religious)",
+  // Flat paths (if LLM flattens the structure)
+  "name":                  "Client's full name",
+  "age":                   "Client's age",
+  "address":               "Client's address",
+  "occupation":            "Client's occupation",
+  "date_of_marriage":      "Date of marriage",
+  "place_of_marriage":     "Place of marriage",
+  "date_of_incident":      "Date of incident",
+  "date":                  "Date of incident",
+  "incident_description":  "What happened (incident description)",
+  "description":           "What happened (incident description)",
+  "police_complaint":      "Police complaint / FIR filed?",
+  "fir_number":            "FIR number",
+  "reliefs_sought":        "Reliefs / orders requested from court",
+  "relief":                "Reliefs / orders requested from court",
+};
+
+/** Convert a raw JSON path like "petitioner.name" to a friendly label. */
+function friendlyLabel(path: string): string {
+  // Direct match
+  if (FIELD_LABELS[path]) return FIELD_LABELS[path];
+  // Incident fields: incidents[0].incident_date → "Incident 1 — date"
+  const incidentMatch = path.match(/^incidents\[(\d+)\]\.(.+)$/);
+  if (incidentMatch) {
+    const idx = parseInt(incidentMatch[1]) + 1;
+    const sub = incidentMatch[2].replace(/_/g, " ");
+    return `Incident ${idx} — ${sub}`;
+  }
+  // Children fields
+  const childMatch = path.match(/^relationship_details\.children\[(\d+)\]\.(.+)$/);
+  if (childMatch) {
+    const idx = parseInt(childMatch[1]) + 1;
+    const sub = childMatch[2].replace(/_/g, " ");
+    return `Child ${idx} — ${sub}`;
+  }
+  // Fallback: humanise the path
+  return path.replace(/_/g, " ").replace(/\./g, " › ").replace(/\[(\d+)\]/g, " $1");
+}
+
 function FactsPageContent() {
   const searchParams = useSearchParams();
   const statementId =
@@ -323,21 +381,31 @@ function FactsPageContent() {
 
       {result && !loading && (
         <>
-          {/* Missing fields banner */}
+          {/* Missing fields banner — specific checklist */}
           {remainingMissing > 0 && (
-            <div className="flex items-start gap-3 bg-orange-50 border border-orange-200 rounded-lg p-4">
-              <AlertTriangle className="text-orange-600 flex-shrink-0 mt-0.5" size={20} />
-              <div>
-                <p className="font-medium text-orange-800">
-                  {remainingMissing} field{remainingMissing !== 1 ? "s" : ""}{" "}
-                  still missing
-                </p>
-                <p className="text-sm text-orange-700 mt-1">
-                  Fill in the highlighted fields below before generating the
-                  draft. You can still proceed — the draft will include{" "}
-                  <code className="bg-orange-100 px-1 rounded">[MISSING]</code>{" "}
-                  placeholders for anything left blank.
-                </p>
+            <div className="bg-orange-50 border border-orange-200 rounded-xl p-4 space-y-3">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="text-orange-600 flex-shrink-0 mt-0.5" size={20} />
+                <div>
+                  <p className="font-semibold text-orange-800">
+                    {remainingMissing} field{remainingMissing !== 1 ? "s" : ""} still missing
+                    — the draft will show <code className="bg-orange-100 px-1 rounded text-xs">[MISSING]</code> for these
+                  </p>
+                  <p className="text-xs text-orange-700 mt-1">
+                    Fill them in the sections below, or go back to Step 1 and re-record with more detail.
+                  </p>
+                </div>
+              </div>
+              {/* Specific list of missing fields */}
+              <div className="ml-8 grid gap-1 sm:grid-cols-2">
+                {collectPaths(editedFacts)
+                  .filter(({ value }) => typeof value === "string" && value.startsWith("[MISSING:"))
+                  .map(({ path }) => (
+                    <div key={path} className="flex items-center gap-2 text-xs text-orange-800">
+                      <span className="w-1.5 h-1.5 rounded-full bg-orange-400 flex-shrink-0" />
+                      {friendlyLabel(path)}
+                    </div>
+                  ))}
               </div>
             </div>
           )}

@@ -3,7 +3,8 @@
 import { useState, useRef } from "react";
 import {
   Mic, MicOff, Upload, Loader2, CheckCircle, AlertCircle,
-  ArrowRight, FileText, Image, FileType,
+  ArrowRight, FileText, Image, FileType, ChevronDown, ChevronUp,
+  User, Home, Calendar, AlertTriangle, Scale, Info,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -23,6 +24,230 @@ interface TranscriptResult {
   char_count?: number;
 }
 
+// ---------------------------------------------------------------------------
+// Statement guide — what the client MUST cover for a complete petition
+// ---------------------------------------------------------------------------
+const GUIDE_ITEMS = [
+  {
+    icon: User,
+    color: "text-blue-600",
+    bg: "bg-blue-50",
+    title: "Your personal details",
+    marathi: "तुमची वैयक्तिक माहिती",
+    points: [
+      "Full name, age, and current address",
+      "Your occupation / source of income",
+    ],
+    marathi_points: [
+      "पूर्ण नाव, वय आणि सध्याचा पत्ता",
+      "तुमचा व्यवसाय / उत्पन्नाचे स्रोत",
+    ],
+  },
+  {
+    icon: User,
+    color: "text-purple-600",
+    bg: "bg-purple-50",
+    title: "Husband / partner details",
+    marathi: "पती / भागीदाराची माहिती",
+    points: [
+      "Full name, age, and current address",
+      "His occupation and approximate monthly income",
+    ],
+    marathi_points: [
+      "पूर्ण नाव, वय आणि सध्याचा पत्ता",
+      "त्याचा व्यवसाय आणि अंदाजे मासिक उत्पन्न",
+    ],
+  },
+  {
+    icon: Calendar,
+    color: "text-pink-600",
+    bg: "bg-pink-50",
+    title: "Marriage & family details",
+    marathi: "लग्न व कुटुंब माहिती",
+    points: [
+      "Date and place of marriage (registered or religious)",
+      "Names and ages of children, and who they currently live with",
+    ],
+    marathi_points: [
+      "लग्नाची तारीख व ठिकाण (नोंदणीकृत किंवा धार्मिक)",
+      "मुलांची नावे, वये आणि ते सध्या कुठे राहतात",
+    ],
+  },
+  {
+    icon: Home,
+    color: "text-green-600",
+    bg: "bg-green-50",
+    title: "Shared house details",
+    marathi: "एकत्र राहण्याच्या घराची माहिती",
+    points: [
+      "Full address of the house you lived together in",
+      "Who owns it — husband / rented / jointly owned",
+      "How long you lived there",
+    ],
+    marathi_points: [
+      "एकत्र राहिलेल्या घराचा पूर्ण पत्ता",
+      "घर कोणाचे — पती / भाड्याचे / संयुक्त मालकी",
+      "किती वर्षे / महिने तिथे राहिलात",
+    ],
+  },
+  {
+    icon: AlertTriangle,
+    color: "text-red-600",
+    bg: "bg-red-50",
+    title: "Each incident of violence — separately",
+    marathi: "प्रत्येक हिंसाचाराची घटना — स्वतंत्रपणे सांगा",
+    points: [
+      "Exact date (or approximate — e.g. 'around Diwali 2023')",
+      "Type: physical / verbal / economic / emotional / sexual",
+      "Exactly what happened — describe in your own words",
+      "Any witnesses who were present",
+      "Injuries sustained (mention if doctor was visited)",
+      "Police complaint / FIR filed? If yes, state the FIR number",
+    ],
+    marathi_points: [
+      "नक्की तारीख (किंवा अंदाजे — 'दिवाळी 2023 च्या आसपास')",
+      "प्रकार: शारीरिक / शाब्दिक / आर्थिक / मानसिक / लैंगिक",
+      "नक्की काय झाले — तुमच्याच शब्दांत सांगा",
+      "जे साक्षीदार तेव्हा उपस्थित होते",
+      "शारीरिक इजा झाल्या का (डॉक्टरकडे गेलात का?)",
+      "पोलीस तक्रार / FIR दाखल केली का? FIR क्रमांक माहीत असल्यास सांगा",
+    ],
+  },
+  {
+    icon: Scale,
+    color: "text-amber-600",
+    bg: "bg-amber-50",
+    title: "What reliefs / orders you want from court",
+    marathi: "तुम्हाला न्यायालयाकडून कोणता दिलासा / आदेश हवा आहे",
+    points: [
+      "Protection order — stop husband from contacting or harming you (Sec 18)",
+      "Residence order — right to stay in the shared house (Sec 19)",
+      "Maintenance — monthly amount needed for you and children (Sec 20)",
+      "Custody of children (Sec 21)",
+      "Compensation for injuries or losses suffered (Sec 22)",
+    ],
+    marathi_points: [
+      "संरक्षण आदेश — पतीने संपर्क / इजा करणे थांबवण्यासाठी (कलम 18)",
+      "निवास आदेश — घरात राहण्याचा हक्क (कलम 19)",
+      "पोटगी — दर महिन्यासाठी किती रक्कम लागते (कलम 20)",
+      "मुलांचा ताबा (कलम 21)",
+      "झालेल्या इजा / नुकसानीसाठी नुकसानभरपाई (कलम 22)",
+    ],
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Statement Guide component
+// ---------------------------------------------------------------------------
+function StatementGuide({ language }: { language: string }) {
+  const [open, setOpen] = useState(false);
+  const isMarathi = language === "mr-IN";
+
+  return (
+    <div className="rounded-xl border border-blue-200 bg-blue-50 overflow-hidden">
+      <button
+        onClick={() => setOpen((p) => !p)}
+        className="w-full flex items-center justify-between px-5 py-4 text-left"
+      >
+        <div className="flex items-center gap-3">
+          <Info size={18} className="text-blue-600 flex-shrink-0" />
+          <div>
+            <p className="font-semibold text-blue-900 text-sm">
+              {isMarathi
+                ? "सांगण्यापूर्वी — काय माहिती द्यायची? (क्लिक करा)"
+                : "Before you begin — what must the client cover? (click to expand)"}
+            </p>
+            <p className="text-xs text-blue-700 mt-0.5">
+              {isMarathi
+                ? "सर्व ६ विषयांवर माहिती दिल्यास [MISSING] प्लेसहोल्डर कमी होतात"
+                : "Covering all 6 areas ensures fewer [MISSING] placeholders in the draft"}
+            </p>
+          </div>
+        </div>
+        {open
+          ? <ChevronUp size={18} className="text-blue-600 flex-shrink-0" />
+          : <ChevronDown size={18} className="text-blue-600 flex-shrink-0" />}
+      </button>
+
+      {open && (
+        <div className="px-5 pb-5 space-y-4 border-t border-blue-200 pt-4">
+          <p className="text-xs text-blue-700 font-semibold uppercase tracking-wide">
+            {isMarathi
+              ? "खालील ६ विषयांवर माहिती द्यावी:"
+              : "The statement must cover these 6 areas:"}
+          </p>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            {GUIDE_ITEMS.map(({ icon: Icon, color, bg, title, marathi, points, marathi_points }) => (
+              <div key={title} className={`rounded-lg p-3 ${bg} border border-white`}>
+                <div className="flex items-center gap-2 mb-2">
+                  <Icon size={15} className={color} />
+                  <span className="text-sm font-semibold text-slate-800">
+                    {isMarathi ? marathi : title}
+                  </span>
+                </div>
+                <ul className="space-y-1">
+                  {(isMarathi ? marathi_points : points).map((pt, i) => (
+                    <li key={i} className="flex items-start gap-1.5 text-xs text-slate-700">
+                      <span className={`${color} font-bold mt-0.5 flex-shrink-0`}>·</span>
+                      {pt}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+
+          {/* Critical tip */}
+          <div className="rounded-lg bg-red-50 border border-red-200 p-3">
+            <p className="text-xs font-semibold text-red-800 mb-1">
+              {isMarathi
+                ? "⚠️ सर्वात महत्त्वाचे — प्रत्येक घटना स्वतंत्रपणे सांगा"
+                : "⚠️ Most critical — describe each incident separately with a date"}
+            </p>
+            <p className="text-xs text-red-700">
+              {isMarathi
+                ? "\"त्याने मला खूप त्रास दिला\" असे सांगणे पुरेसे नाही. प्रत्येक घटनेची तारीख, काय झाले आणि साक्षीदार यांचा स्वतंत्रपणे उल्लेख करा."
+                : "\"He used to trouble me a lot\" is not sufficient. For every incident state the date, what exactly happened, and any witnesses. Vague statements produce vague drafts."}
+            </p>
+          </div>
+
+          {/* Sample phrases */}
+          <div className="rounded-lg bg-white border border-blue-200 p-3">
+            <p className="text-xs font-semibold text-slate-600 mb-2">
+              {isMarathi ? "📋 नमुना वाक्ये (असे बोलावे):" : "📋 Sample phrases to guide the client:"}
+            </p>
+            <div className="space-y-1 text-xs text-slate-600 font-mono leading-relaxed">
+              {isMarathi ? (
+                <>
+                  <p className="text-slate-500">"माझे नाव ___ आहे, माझे वय ___ वर्षे आहे, मी ___ येथे राहते."</p>
+                  <p className="text-slate-500">"माझ्या पतीचे नाव ___, त्यांचे वय ___ वर्षे, ते ___ येथे राहतात."</p>
+                  <p className="text-slate-500">"आमचे लग्न ___ तारखेला ___ येथे झाले (नोंदणीकृत / धार्मिक)."</p>
+                  <p className="text-slate-500">"___ तारखेला, रात्री ___ वाजता, त्यांनी ___ केले. साक्षीदार ___ होते."</p>
+                  <p className="text-slate-500">"मला ___ इजा झाली / मी ___ रुग्णालयात उपचार घेतले."</p>
+                  <p className="text-slate-500">"मला घरात राहण्याचा हक्क / दर महिना ___ रु. पोटगी हवी आहे."</p>
+                </>
+              ) : (
+                <>
+                  <p className="text-slate-500">"My name is ___, I am ___ years old, I currently live at ___."</p>
+                  <p className="text-slate-500">"My husband&apos;s name is ___, he is ___ years old, he lives at ___."</p>
+                  <p className="text-slate-500">"We got married on ___ at ___ (registered / religious ceremony)."</p>
+                  <p className="text-slate-500">"On ___ [date], at around ___ [time], he ___. Witness was ___."</p>
+                  <p className="text-slate-500">"I suffered ___ injury and visited ___ hospital / clinic."</p>
+                  <p className="text-slate-500">"I want the right to stay in the house / Rs ___ per month for myself and children."</p>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main page
+// ---------------------------------------------------------------------------
 export default function RecordPage() {
   const [inputMode, setInputMode] = useState<InputMode>("voice");
 
@@ -145,7 +370,7 @@ export default function RecordPage() {
       }
       const { job_id } = await res.json();
 
-      // Poll for progress every 2 seconds
+      // Poll every 2 seconds
       await new Promise<void>((resolve, reject) => {
         pollRef.current = setInterval(async () => {
           try {
@@ -200,14 +425,39 @@ export default function RecordPage() {
   const accepted = ".pdf,.docx,.doc,.jpg,.jpeg,.png,.tiff";
 
   return (
-    <div className="max-w-2xl mx-auto space-y-8">
+    <div className="max-w-2xl mx-auto space-y-6">
       <div>
         <p className="text-sm text-slate-400 uppercase tracking-wider font-medium">Step 1 of 3</p>
         <h1 className="text-2xl font-bold text-slate-900 mt-1">Record Client Statement</h1>
         <p className="text-slate-500 mt-1 text-sm">
-          Capture the client's statement — by voice recording or by uploading a written document.
+          Capture the client&apos;s statement — by voice recording or by uploading a written document.
         </p>
       </div>
+
+      {/* Language selector */}
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-2">
+          Client&apos;s primary language
+        </label>
+        <div className="flex gap-3">
+          {languageOptions.map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => setLanguage(opt.value)}
+              className={`px-4 py-2 rounded-lg border text-sm font-medium transition-colors ${
+                language === opt.value
+                  ? "bg-blue-600 text-white border-blue-600"
+                  : "bg-white text-slate-700 border-slate-300 hover:border-blue-400"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Statement guide — shown before recording/upload */}
+      {state !== "done" && <StatementGuide language={language} />}
 
       {/* Input mode toggle */}
       <div className="flex rounded-xl border border-slate-200 overflow-hidden">
@@ -231,28 +481,6 @@ export default function RecordPage() {
         >
           <FileText size={16} /> Written Statement
         </button>
-      </div>
-
-      {/* Language selector */}
-      <div>
-        <label className="block text-sm font-medium text-slate-700 mb-2">
-          Client's primary language
-        </label>
-        <div className="flex gap-3">
-          {languageOptions.map((opt) => (
-            <button
-              key={opt.value}
-              onClick={() => setLanguage(opt.value)}
-              className={`px-4 py-2 rounded-lg border text-sm font-medium transition-colors ${
-                language === opt.value
-                  ? "bg-blue-600 text-white border-blue-600"
-                  : "bg-white text-slate-700 border-slate-300 hover:border-blue-400"
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
       </div>
 
       {/* ── VOICE MODE ── */}
@@ -345,7 +573,7 @@ export default function RecordPage() {
       {inputMode === "document" && state !== "done" && (
         <div className="bg-white rounded-2xl border border-slate-200 p-8 space-y-6">
           <div className="text-center space-y-2">
-            <p className="text-sm font-medium text-slate-700">Upload the client's written statement</p>
+            <p className="text-sm font-medium text-slate-700">Upload the client&apos;s written statement</p>
             <p className="text-xs text-slate-400">Supported: PDF, Word (.docx), JPG, PNG — handwritten or typed</p>
           </div>
 
@@ -381,7 +609,7 @@ export default function RecordPage() {
                 <Upload className="text-slate-400" size={32} />
                 <div className="text-center">
                   <p className="text-sm font-medium text-slate-600">Click to select file</p>
-                  <p className="text-xs text-slate-400 mt-0.5">PDF, DOCX, JPG, PNG up to 20MB</p>
+                  <p className="text-xs text-slate-400 mt-0.5">PDF, DOCX, JPG, PNG — no size limit</p>
                 </div>
               </>
             )}
@@ -426,7 +654,7 @@ export default function RecordPage() {
                 </div>
               ) : (
                 <>
-                  <p className="font-medium text-slate-800">Uploading & analysing document…</p>
+                  <p className="font-medium text-slate-800">Uploading &amp; analysing document…</p>
                   <p className="text-sm text-slate-500">Detecting text layer — OCR starts if needed</p>
                 </>
               )}

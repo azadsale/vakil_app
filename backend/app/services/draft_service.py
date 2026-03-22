@@ -30,7 +30,7 @@ from app.services.fact_extraction_service import (
     extract_facts_from_transcript,
     get_missing_fields,
 )
-from app.services.llm_service import LLMError, call_llm
+from app.services.llm_service import LLMError, active_provider, call_llm
 from app.services.rag_service import build_legal_context_string, embed_single, query_dv_act
 from app.services.template_service import (
     get_top_templates,
@@ -264,7 +264,7 @@ async def generate_dv_petition_draft(
     # Append mandatory disclaimer
     disclaimer = MANDATORY_DISCLAIMER.format(
         timestamp=datetime.utcnow().isoformat(),
-        model=settings.llama_index_llm_model,
+        model=active_provider(),
     )
     draft_text_with_disclaimer = draft_text + disclaimer
 
@@ -279,7 +279,7 @@ async def generate_dv_petition_draft(
         legal_sections_used=legal_sections_used,
         template_ids_used=template_ids_used,
         draft_text=draft_text_with_disclaimer,
-        generation_model=settings.groq_llm_model,
+        generation_model=active_provider(),
         generation_prompt_hash=prompt_hash,
     )
     db.add(draft)
@@ -379,9 +379,11 @@ def _summarize_facts_for_template_query(facts: dict[str, Any]) -> str:
 def _format_templates_as_shots(
     templates: list[dict[str, Any]],
 ) -> str:
-    """Format retrieved templates as few-shot examples for the generation prompt.
+    """Format retrieved templates as style-reference examples for the generation prompt.
 
-    Includes only the first 2000 chars of each template to stay within context limits.
+    Sends up to 20,000 chars per template — Gemini's 1M context easily handles this.
+    The more of the lawyer's actual petition the model sees, the better it matches
+    their structure, section numbering, paragraph style, and legal phrasing.
 
     Args:
         templates: List of template dicts from template_service.
@@ -391,9 +393,16 @@ def _format_templates_as_shots(
     """
     shots = []
     for i, template in enumerate(templates, 1):
-        excerpt = template["content"][:4000]
-        if len(template["content"]) > 4000:
-            excerpt += "\n... [excerpt — full template available]"
-        shots.append(f"[STYLE EXAMPLE {i} — similarity: {template['similarity']:.2f}]\n{excerpt}")
+        # Use full content up to 20,000 chars per template
+        content = template["content"]
+        excerpt = content[:20_000]
+        if len(content) > 20_000:
+            excerpt += "\n\n... [remaining content truncated — use the style shown above]"
+        shots.append(
+            f"[STYLE REFERENCE {i} — This is an actual petition drafted by this advocate "
+            f"(similarity score: {template['similarity']:.2f}). "
+            f"Replicate this exact structure, paragraph numbering, section citations, "
+            f"prayer clause format, and verification language.]\n\n{excerpt}"
+        )
 
-    return "\n\n---\n\n".join(shots)
+    return "\n\n" + ("=" * 60) + "\n\n".join(shots) + "\n\n" + ("=" * 60)

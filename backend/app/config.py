@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     # Primary LLM — used when GEMINI_API_KEY is set (recommended)
     # -------------------------------------------------------------------------
     gemini_api_key: SecretStr = SecretStr("")
-    gemini_model: str = "gemini-1.5-flash"   # free tier, 1M TPM, 128K context
+    gemini_model: str = "gemini-2.0-flash"   # free tier: 1500 req/day, 15 RPM — use 2.0 not 2.5 (2.5 is only 20/day)
 
     # -------------------------------------------------------------------------
     # Groq (Fallback LLM — 12K tokens/min free, get key at console.groq.com)

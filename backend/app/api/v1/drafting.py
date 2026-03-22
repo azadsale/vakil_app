@@ -34,6 +34,7 @@ from app.services.document_extraction_service import (
     SUPPORTED_DOC_MIME_TYPES,
     extract_text_from_document,
 )
+from app.services.model_router import get_all_quotas
 from app.services.sarvam_service import SarvamTranscriptionError, transcribe_upload_file
 from app.services.template_service import TemplateServiceError, promote_draft_to_template
 from app.utils.logging import get_logger
@@ -226,12 +227,12 @@ async def _run_document_ocr_job(
     flush_task = asyncio.create_task(_flush_progress())
 
     try:
-        extracted_text, method, char_count = await asyncio.to_thread(
-            extract_text_from_document,
-            file_bytes,
-            mime_type,
-            filename,
-            on_page_done,
+        # extract_text_from_document is now async (uses Gemini Vision for OCR)
+        extracted_text, method, char_count = await extract_text_from_document(
+            file_bytes=file_bytes,
+            mime_type=mime_type,
+            filename=filename,
+            on_page_done=on_page_done,
         )
 
         # Persist statement in a new DB session
@@ -472,6 +473,25 @@ async def generate_draft(
         "draft_preview": (draft.draft_text[:800] + "...")
         if len(draft.draft_text) > 800
         else draft.draft_text,
+    }
+
+
+# -------------------------------------------------------------------------
+# Quota / health — MUST be before /{draft_id} catch-all
+# -------------------------------------------------------------------------
+
+@router.get("/quota")
+async def get_quota_status():
+    """Return current daily usage and remaining quota for all Gemini model tiers.
+
+    The model router automatically selects the best model that has enough
+    remaining quota for a given task. This endpoint shows the current state.
+    """
+    quotas = await get_all_quotas()
+    return {
+        "quotas": quotas,
+        "note": "The router tries the best model first. If its quota is exhausted, "
+                "it falls back to the next tier automatically.",
     }
 
 
