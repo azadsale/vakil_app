@@ -1,7 +1,8 @@
 """Sarvam Saarika translation service — English → Indian languages.
 
 Uses Sarvam AI's translate API (mayura:v1) for high-quality Indic translations.
-Handles long documents by chunking at sentence boundaries.
+Handles long documents by chunking at PARAGRAPH boundaries to preserve
+petition structure (headings, numbered clauses, prayer sections).
 
 Usage:
     from app.services.sarvam_translate_service import translate_text
@@ -32,39 +33,50 @@ class TranslationError(Exception):
     """Raised when translation fails."""
 
 
-def _chunk_text(text: str, max_chars: int = _MAX_CHARS_PER_CHUNK) -> list[str]:
-    """Split text into chunks at sentence boundaries, each under max_chars.
+def _split_into_paragraphs(text: str) -> list[str]:
+    """Split text into structural paragraphs at double-newline boundaries.
 
-    Tries to split at: paragraph breaks → full stops → semicolons → commas.
-    Never splits mid-word.
+    Preserves petition structure: headings, numbered paragraphs, prayer clauses
+    stay as separate units. Each paragraph is translated independently.
     """
-    if len(text) <= max_chars:
-        return [text]
+    # Split on double newlines (paragraph breaks)
+    raw_paras = re.split(r'\n\s*\n', text)
+    # Filter empty paragraphs and strip whitespace
+    return [p.strip() for p in raw_paras if p.strip()]
+
+
+def _chunk_paragraph(paragraph: str, max_chars: int = _MAX_CHARS_PER_CHUNK) -> list[str]:
+    """Split a single paragraph into chunks if it exceeds max_chars.
+
+    For most petition paragraphs (headings, numbered clauses), they fit in one chunk.
+    Only long incident descriptions need splitting — and those are split at sentence
+    boundaries to keep meaning intact.
+    """
+    if len(paragraph) <= max_chars:
+        return [paragraph]
 
     chunks: list[str] = []
-    remaining = text
+    remaining = paragraph
 
     while remaining:
         if len(remaining) <= max_chars:
             chunks.append(remaining)
             break
 
-        # Find the best split point within max_chars
         segment = remaining[:max_chars]
 
-        # Try split points in order of preference
+        # Try split points: sentence end → semicolon → comma → space
         split_pos = -1
-        for delimiter in ["\n\n", "\n", "। ", ". ", "; ", ", "]:
+        for delimiter in ["। ", ". ", "; ", ", "]:
             pos = segment.rfind(delimiter)
-            if pos > max_chars * 0.3:  # don't split too early
+            if pos > max_chars * 0.3:
                 split_pos = pos + len(delimiter)
                 break
 
         if split_pos == -1:
-            # Last resort: split at last space
             split_pos = segment.rfind(" ")
             if split_pos == -1:
-                split_pos = max_chars  # hard cut
+                split_pos = max_chars
 
         chunk = remaining[:split_pos].strip()
         if chunk:
@@ -72,6 +84,49 @@ def _chunk_text(text: str, max_chars: int = _MAX_CHARS_PER_CHUNK) -> list[str]:
         remaining = remaining[split_pos:].strip()
 
     return chunks
+
+
+def _prepare_chunks(text: str) -> list[str]:
+    """Split text into translation-ready chunks that preserve document structure.
+
+    Strategy:
+    1. Split at paragraph boundaries (double newlines) — preserves petition structure
+    2. If any paragraph exceeds 900 chars, split it at sentence boundaries
+    3. Each chunk is translated independently, then reassembled with original spacing
+
+    This ensures headings, numbered clauses, and prayer sections stay intact.
+    """
+    paragraphs = _split_into_paragraphs(text)
+    chunks: list[str] = []
+
+    for para in paragraphs:
+        sub_chunks = _chunk_paragraph(para)
+        chunks.extend(sub_chunks)
+
+    return chunks
+
+
+# Patterns that should NOT be translated — keep as-is
+_NO_TRANSLATE_PATTERNS = [
+    re.compile(r'^-{3,}$'),           # --- separator lines
+    re.compile(r'^\*{3,}$'),          # *** separator lines
+    re.compile(r'^={3,}$'),           # === separator lines
+    re.compile(r'^LEGAL DISCLAIMER:', re.IGNORECASE),  # Disclaimer header
+]
+
+
+def _should_skip_translation(chunk: str) -> bool:
+    """Check if a chunk should be kept as-is (separators, markers, etc.)."""
+    stripped = chunk.strip()
+    if not stripped:
+        return True
+    # Very short chunks that are just formatting
+    if len(stripped) < 5 and not any(c.isalpha() for c in stripped):
+        return True
+    for pattern in _NO_TRANSLATE_PATTERNS:
+        if pattern.match(stripped):
+            return True
+    return False
 
 
 async def translate_text(
@@ -82,7 +137,8 @@ async def translate_text(
 ) -> str:
     """Translate text from English to an Indian language using Sarvam Saarika.
 
-    Automatically chunks long text and translates each chunk separately.
+    Splits at paragraph boundaries to preserve petition structure (headings,
+    numbered clauses, sections). Each paragraph is translated independently.
 
     Args:
         text: Source text (English).
@@ -91,7 +147,7 @@ async def translate_text(
         mode: Translation style — "formal" for legal documents.
 
     Returns:
-        Translated text in target language.
+        Translated text in target language with structure preserved.
 
     Raises:
         TranslationError: If the API call fails.
@@ -106,8 +162,8 @@ async def translate_text(
         "Content-Type": "application/json",
     }
 
-    # Split into chunks
-    chunks = _chunk_text(text)
+    # Split into structure-preserving chunks
+    chunks = _prepare_chunks(text)
     logger.info(
         "translation_start",
         source=source_language,
@@ -122,8 +178,9 @@ async def translate_text(
 
     async with httpx.AsyncClient(base_url=base_url, timeout=30.0) as client:
         for i, chunk in enumerate(chunks):
-            if not chunk.strip():
-                translated_chunks.append("")
+            # Skip empty chunks and formatting-only chunks
+            if _should_skip_translation(chunk):
+                translated_chunks.append(chunk)
                 continue
 
             payload = {
@@ -132,7 +189,7 @@ async def translate_text(
                 "target_language_code": target_language,
                 "model": _MODEL,
                 "mode": mode,
-                "numerals_format": "international",  # keep numbers as 1,2,3 not devanagari
+                "numerals_format": "international",
             }
 
             try:
@@ -166,7 +223,6 @@ async def translate_text(
                     if retry.status_code == 200:
                         translated_chunks.append(retry.json().get("translated_text", ""))
                     else:
-                        # Give up on this chunk — keep original English
                         logger.warning("translation_chunk_failed_keeping_original", chunk=i + 1)
                         translated_chunks.append(chunk)
                 else:
@@ -177,7 +233,6 @@ async def translate_text(
                         status=response.status_code,
                         error=error_msg,
                     )
-                    # Keep original text for failed chunks so the draft isn't lost
                     translated_chunks.append(chunk)
 
             except Exception as exc:
@@ -186,10 +241,10 @@ async def translate_text(
                     chunk=i + 1,
                     error=str(exc),
                 )
-                # Keep original for this chunk
                 translated_chunks.append(chunk)
 
-    result = "\n".join(translated_chunks)
+    # Reassemble with double-newlines between paragraphs (preserving petition structure)
+    result = "\n\n".join(translated_chunks)
 
     logger.info(
         "translation_complete",

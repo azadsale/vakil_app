@@ -301,14 +301,15 @@ function FactsPageContent() {
   /** Called by EditableField whenever the lawyer types in a field. */
   const handleFieldChange = useCallback(
     (path: string, newVal: string) => {
-      setEditedFacts((prev) => setAtPath(prev, path, newVal));
-      // Persist latest edits to sessionStorage so draft page has fresh facts
-      sessionStorage.setItem(
-        "facts_json",
-        JSON.stringify(setAtPath(editedFacts, path, newVal))
-      );
+      setEditedFacts((prev) => {
+        const updated = setAtPath(prev, path, newVal);
+        // Persist inside the functional update so we always have the latest state
+        // This avoids stale closure issues where sessionStorage misses edits
+        sessionStorage.setItem("facts_json", JSON.stringify(updated));
+        return updated;
+      });
     },
-    [editedFacts]
+    [] // No dependencies needed — uses functional state update
   );
 
   // Count remaining [MISSING:] fields in editedFacts

@@ -53,13 +53,17 @@ INPUTS YOU WILL RECEIVE:
 2. LEGAL GROUNDING — relevant DV Act sections retrieved from the statute (use ONLY these)
 3. STYLE REFERENCE — sample petition(s) by the advocate (match structure, tone, numbering style exactly)
 
+CRITICAL — READING THE CASE FACTS JSON:
+- The JSON contains the ACTUAL VALUES filled in by the lawyer/client.
+- If a field has a real value (a name, address, date, etc.), USE IT EXACTLY AS-IS in the petition. Do NOT replace it with [MISSING].
+- ONLY use [MISSING: field_name] if the JSON value literally starts with "[MISSING:" — meaning the lawyer confirmed it is unknown.
+- Example: if the JSON says "petitioner.name": "Punam Sunil Pukale" → write "Punam Sunil Pukale" in the petition.
+- Example: if the JSON says "petitioner.age": "[MISSING: age]" → write "[MISSING: age]" in the petition.
+- NEVER replace a filled-in value with [MISSING]. This is the #1 most important rule.
+
 MANDATORY RULES:
 1. NEVER cite any legal section not explicitly present in the LEGAL GROUNDING section.
-2. LANGUAGE: Write the ENTIRE petition in {language}. This is NON-NEGOTIABLE.
-   - If the language is "marathi" (मराठी), write EVERYTHING in Devanagari script — court header, party names, incidents, reliefs, prayer, verification — ALL in Marathi.
-   - Legal section numbers (Section 12, 18, 19, 20, 21, 22) may remain in English numerals.
-   - If incidents are described in Marathi/Hindi in the case facts, preserve that language and formalize it.
-   - Do NOT write in English when Marathi is requested. Do NOT mix English sentences into a Marathi petition.
+2. LANGUAGE: Write in English. The draft will be translated to Marathi separately if needed.
 3. INCIDENTS — Each incident must be a separate numbered paragraph with:
    - The specific date (or approximate period if exact date unknown)
    - The type of violence (physical/verbal/economic/emotional)
@@ -73,20 +77,55 @@ MANDATORY RULES:
    - monetary_relief  → Section 20
    - custody_order    → Section 21
    - compensation_order → Section 22
-5. STRUCTURE (numbered, do not skip any section):
-   (a) Court Header — "IN THE COURT OF HON'BLE JUDICIAL MAGISTRATE, FIRST CLASS, [CITY]"
-   (b) Application title — "APPLICATION UNDER SECTION 12 OF THE PROTECTION OF WOMEN FROM DOMESTIC VIOLENCE ACT, 2005"
-   (c) Parties — Petitioner name/age/address, Respondent name/age/address/relationship
-   (d) Jurisdiction — why this court has jurisdiction
-   (e) Facts of the case — background (marriage, household, relationship dynamics)
-   (f) Acts of Domestic Violence — NUMBERED PARAGRAPHS, one per incident, detailed
-   (g) Legal provisions attracted — cite retrieved DV Act sections with explanation
-   (h) Reliefs sought — numbered list, each with correct section number
-   (i) Prayer clause — formal prayer to the court
-   (j) Verification — "I, [Name], do hereby verify…" with city and date
-6. Use [MISSING: FIELD] ONLY for names/addresses/dates genuinely absent from the facts JSON. Never for section numbers or standard legal phrases.
+5. STRUCTURE — Use this EXACT structure with clear section headers on separate lines.
+   Each section must be separated by a blank line for readability:
+
+   IN THE COURT OF HON'BLE JUDICIAL MAGISTRATE, FIRST CLASS, [CITY]
+
+   APPLICATION UNDER SECTION 12 OF THE PROTECTION OF WOMEN FROM DOMESTIC VIOLENCE ACT, 2005
+
+   PETITIONER:
+   [Name], aged [age] years, [occupation], residing at [address]
+
+   VERSUS
+
+   RESPONDENT(S):
+   1. [Name], aged [age] years, [relationship], residing at [address]
+
+   JURISDICTION:
+   [Why this court has jurisdiction]
+
+   FACTS OF THE CASE:
+   1. [Marriage and relationship background paragraph]
+   2. [Shared household and family dynamics paragraph]
+
+   ACTS OF DOMESTIC VIOLENCE:
+   3. [Incident 1 — date, type, detailed 80+ word description, witnesses, injuries]
+   4. [Incident 2 — same format]
+   5. [Continue for each incident]
+
+   LEGAL PROVISIONS:
+   [Cite relevant DV Act sections with explanation]
+
+   RELIEFS SOUGHT:
+   (a) Protection Order under Section 18 — [details]
+   (b) Residence Order under Section 19 — [details]
+   (c) Monetary Relief under Section 20 — [details]
+   [Continue for each relief]
+
+   PRAYER:
+   In the light of the above facts and circumstances, the Petitioner most respectfully prays...
+
+   VERIFICATION:
+   I, [Name], do hereby verify that the contents of this petition are true...
+
+   Place: [City]
+   Date: [Date]
+
+6. PLACEHOLDERS: Use [MISSING: specific_field_name] ONLY when the JSON value literally contains "[MISSING:". Examples: [MISSING: petitioner_age], [MISSING: shared_household_address]. NEVER use generic [MISSING: FIELD].
 7. The petition must be substantive and detailed — minimum 1200 words. Each incident paragraph must be at least 80 words with full factual detail. A short or summarised draft is UNACCEPTABLE.
 8. Do NOT add facts not present in the JSON. Do NOT hallucinate names, dates, or amounts.
+9. Every section header (PETITIONER, VERSUS, RESPONDENT, JURISDICTION, FACTS OF THE CASE, ACTS OF DOMESTIC VIOLENCE, LEGAL PROVISIONS, RELIEFS SOUGHT, PRAYER, VERIFICATION) must appear on its own line, making the structure crystal clear.
 
 OUTPUT: Complete petition text only. No JSON, no commentary, no preamble."""
 
@@ -102,18 +141,18 @@ STYLE REFERENCE (advocate's sample petition — replicate this structure and ton
 {style_reference}
 
 ---
-DRAFT LANGUAGE: {language}
+Now draft the complete Section 12 DV Act petition in English.
 
-Now draft the complete Section 12 DV Act petition.
-
-CRITICAL REQUIREMENTS:
-1. LANGUAGE = {language}. The ENTIRE petition must be in {language}. If marathi, write in Devanagari script throughout.
-2. Each incident = a separate numbered paragraph with date, type of violence, FULL description (80+ words each), witnesses, injuries, FIR details
-3. Convert colloquial speech into formal legal language suitable for court filing
-4. Minimum 1200 words total — be detailed and thorough
-5. Include correct section numbers for all reliefs (Sec 18/19/20/21/22)
-6. Follow the STYLE REFERENCE structure exactly — same headings, numbering, prayer clause format
-7. Do NOT summarise incidents — expand them with legal detail"""
+CRITICAL REMINDERS:
+1. READ THE JSON CAREFULLY — use the actual values from the JSON. If a field says "Punam Sunil Pukale", write that name. Do NOT replace real values with [MISSING].
+2. Only use [MISSING: field_name] when the JSON value literally starts with "[MISSING:"
+3. Each incident = a separate numbered paragraph with date, type of violence, FULL description (80+ words each), witnesses, injuries, FIR details
+4. Convert colloquial speech into formal legal language suitable for court filing
+5. Minimum 1200 words total — be detailed and thorough
+6. Include correct section numbers for all reliefs (Sec 18/19/20/21/22)
+7. Use clear section headers (PETITIONER, RESPONDENT, JURISDICTION, FACTS, ACTS OF DOMESTIC VIOLENCE, RELIEFS, PRAYER, VERIFICATION) each on its own line
+8. Separate each section with a blank line for readability
+9. Do NOT summarise incidents — expand them with legal detail"""
 
 MANDATORY_DISCLAIMER = """
 ---
@@ -255,14 +294,23 @@ async def generate_dv_petition_draft(
     # If Marathi is requested, translate the English draft via Sarvam Saarika API
     # (best-in-class Indic translation) — giving us Gemini's legal reasoning +
     # Sarvam's native Marathi fluency.
+    # Log the facts being sent so we can verify filled fields are present
+    logger.info(
+        "draft_facts_preview",
+        case_id=str(case_id),
+        petitioner_name=facts.get("petitioner", {}).get("name", "?"),
+        respondent_name=facts.get("respondent", {}).get("name", "?"),
+        n_incidents=len(facts.get("incidents", [])),
+        n_reliefs=len(facts.get("reliefs_sought", [])),
+    )
+
     try:
         draft_text = await call_llm(
-            system_prompt=DRAFT_GENERATION_SYSTEM_PROMPT.format(language="english"),
+            system_prompt=DRAFT_GENERATION_SYSTEM_PROMPT,
             user_prompt=DRAFT_GENERATION_USER_TEMPLATE.format(
                 facts_json=json.dumps(facts, indent=2, ensure_ascii=False),
                 legal_context=legal_context,
                 style_reference=style_reference,
-                language="english",
             ),
             temperature=0.3,
             max_tokens=16384,  # Large output for detailed petition (1200+ words)

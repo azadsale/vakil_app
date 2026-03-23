@@ -43,6 +43,21 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
+def _collect_leaf_values(obj: Any, results: list | None = None) -> list:
+    """Recursively collect all leaf (non-dict, non-list) values from a nested structure."""
+    if results is None:
+        results = []
+    if isinstance(obj, dict):
+        for v in obj.values():
+            _collect_leaf_values(v, results)
+    elif isinstance(obj, list):
+        for item in obj:
+            _collect_leaf_values(item, results)
+    else:
+        results.append(obj)
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Dependency: get current user (placeholder — replace with real JWT auth)
 # For V1 MVP, returns a hardcoded user UUID until auth is implemented
@@ -441,6 +456,19 @@ async def generate_draft(
     if pre_extracted_facts:
         try:
             facts_dict = _json.loads(pre_extracted_facts)
+            # Log to verify edited facts are actually reaching the backend
+            pet_name = facts_dict.get("petitioner", {}).get("name", "?")
+            n_missing = sum(
+                1 for v in _collect_leaf_values(facts_dict)
+                if isinstance(v, str) and v.startswith("[MISSING:")
+            )
+            logger.info(
+                "pre_extracted_facts_received",
+                statement_id=str(statement_id),
+                petitioner_name=pet_name,
+                missing_count=n_missing,
+                total_keys=len(str(facts_dict)),
+            )
         except _json.JSONDecodeError as exc:
             raise HTTPException(
                 status_code=422,
