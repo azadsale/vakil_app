@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import {
   Mic, MicOff, Upload, Loader2, CheckCircle, AlertCircle,
   ArrowRight, FileText, Image, FileType, ChevronDown, ChevronUp,
   User, Home, Calendar, AlertTriangle, Scale, Info,
+  History, Clock, RotateCcw,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -12,6 +13,17 @@ const API_URL = "";
 
 type RecordingState = "idle" | "recording" | "recorded" | "uploading" | "done" | "error";
 type InputMode = "voice" | "document";
+
+interface CachedStatement {
+  statement_id: string;
+  preview: string;
+  char_count: number;
+  language: string;
+  source: string;
+  status: string;
+  quality: string;
+  created_at: string | null;
+}
 
 interface TranscriptResult {
   statement_id: string;
@@ -265,9 +277,47 @@ export default function RecordPage() {
   const [ocrProgress, setOcrProgress] = useState<{ current: number; total: number } | null>(null);
   const pollRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Cache state — previous successful OCR extractions
+  const [cachedStatements, setCachedStatements] = useState<CachedStatement[]>([]);
+  const [showCache, setShowCache] = useState(false);
+  const [cacheLoading, setCacheLoading] = useState(false);
+
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Fetch cached statements on mount
+  useEffect(() => {
+    const fetchCache = async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/v1/drafting/recent-statements`);
+        if (res.ok) {
+          const data = await res.json();
+          setCachedStatements(data.statements || []);
+        }
+      } catch {
+        // Silently ignore — cache is optional
+      }
+    };
+    fetchCache();
+  }, []);
+
+  const useCachedStatement = (stmt: CachedStatement) => {
+    setResult({
+      statement_id: stmt.statement_id,
+      status: "transcribed",
+      language_detected: stmt.language,
+      duration_seconds: null,
+      transcript_preview: stmt.preview,
+      transcript_length: stmt.char_count,
+      extraction_method: stmt.source === "voice" ? undefined : stmt.source,
+      char_count: stmt.char_count,
+    });
+    sessionStorage.setItem("statement_id", stmt.statement_id);
+    setState("done");
+    setDocState("done");
+    setShowCache(false);
+  };
 
   const languageOptions = [
     { value: "mr-IN", label: "मराठी (Marathi)" },
@@ -483,6 +533,88 @@ export default function RecordPage() {
         </button>
       </div>
 
+      {/* ── USE PREVIOUS EXTRACTION (Cache) ── */}
+      {state !== "done" && cachedStatements.length > 0 && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 overflow-hidden">
+          <button
+            onClick={() => setShowCache((p) => !p)}
+            className="w-full flex items-center justify-between px-5 py-3.5 text-left"
+          >
+            <div className="flex items-center gap-3">
+              <History size={18} className="text-amber-600 flex-shrink-0" />
+              <div>
+                <p className="font-semibold text-amber-900 text-sm">
+                  Use previous extraction ({cachedStatements.length} available)
+                </p>
+                <p className="text-xs text-amber-700 mt-0.5">
+                  Skip Step 1 — reuse a cached OCR/transcription output and save API quota
+                </p>
+              </div>
+            </div>
+            {showCache
+              ? <ChevronUp size={18} className="text-amber-600 flex-shrink-0" />
+              : <ChevronDown size={18} className="text-amber-600 flex-shrink-0" />}
+          </button>
+
+          {showCache && (
+            <div className="px-5 pb-4 space-y-2 border-t border-amber-200 pt-3 max-h-80 overflow-y-auto">
+              {cachedStatements.map((stmt) => {
+                const date = stmt.created_at
+                  ? new Date(stmt.created_at).toLocaleString("en-IN", {
+                      day: "numeric", month: "short", year: "numeric",
+                      hour: "2-digit", minute: "2-digit",
+                    })
+                  : "Unknown date";
+                const sourceIcon = stmt.source === "voice" ? "🎙️" : stmt.source === "image" ? "🖼️" : "📄";
+                const langLabel: Record<string, string> = {
+                  "mr-IN": "Marathi", "hi-IN": "Hindi", "en-IN": "English",
+                };
+
+                return (
+                  <div
+                    key={stmt.statement_id}
+                    className="bg-white rounded-lg border border-amber-100 p-3 hover:border-amber-400 hover:shadow-sm transition-all cursor-pointer group"
+                    onClick={() => useCachedStatement(stmt)}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
+                          <span className="text-base">{sourceIcon}</span>
+                          <span className={`text-xs font-semibold px-1.5 py-0.5 rounded ${
+                            stmt.quality === "good"
+                              ? "bg-green-100 text-green-700"
+                              : "bg-yellow-100 text-yellow-700"
+                          }`}>
+                            {stmt.quality === "good" ? "✓ Good" : "Partial"}
+                          </span>
+                          <span className="text-xs font-medium text-slate-600">
+                            {langLabel[stmt.language] || stmt.language}
+                          </span>
+                          <span className="text-xs text-slate-400">·</span>
+                          <span className="text-xs text-slate-400 flex items-center gap-1">
+                            <Clock size={10} /> {date}
+                          </span>
+                          <span className="text-xs text-slate-400">·</span>
+                          <span className="text-xs text-slate-500 font-medium">
+                            {stmt.char_count.toLocaleString()} chars
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-600 line-clamp-2 leading-relaxed">
+                          {stmt.preview}
+                        </p>
+                      </div>
+                      <button className="flex-shrink-0 mt-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-amber-100 text-amber-800 group-hover:bg-amber-600 group-hover:text-white transition-colors">
+                        Use this
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── VOICE MODE ── */}
       {inputMode === "voice" && state !== "done" && (
         <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center space-y-6">
@@ -697,13 +829,29 @@ export default function RecordPage() {
             <p className="text-slate-800 leading-relaxed text-sm">{result.transcript_preview}</p>
           </div>
 
-          <Link
-            href={`/facts?statement_id=${result.statement_id}`}
-            className="flex items-center justify-center gap-2 w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium transition-colors"
-          >
-            Continue to Extract Facts
-            <ArrowRight size={18} />
-          </Link>
+          <div className="flex gap-3">
+            <button
+              onClick={() => {
+                setState("idle");
+                setDocState("idle");
+                setResult(null);
+                setError(null);
+                setDocFile(null);
+                setAudioBlob(null);
+              }}
+              className="flex items-center justify-center gap-2 px-4 py-3 border border-slate-300 rounded-xl text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+            >
+              <RotateCcw size={16} />
+              Start Fresh
+            </button>
+            <Link
+              href={`/facts?statement_id=${result.statement_id}`}
+              className="flex-1 flex items-center justify-center gap-2 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium transition-colors"
+            >
+              Continue to Extract Facts
+              <ArrowRight size={18} />
+            </Link>
+          </div>
         </div>
       )}
     </div>

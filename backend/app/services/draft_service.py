@@ -55,7 +55,11 @@ INPUTS YOU WILL RECEIVE:
 
 MANDATORY RULES:
 1. NEVER cite any legal section not explicitly present in the LEGAL GROUNDING section.
-2. LANGUAGE: Write the ENTIRE petition in {language}. No mixing of languages.
+2. LANGUAGE: Write the ENTIRE petition in {language}. This is NON-NEGOTIABLE.
+   - If the language is "marathi" (मराठी), write EVERYTHING in Devanagari script — court header, party names, incidents, reliefs, prayer, verification — ALL in Marathi.
+   - Legal section numbers (Section 12, 18, 19, 20, 21, 22) may remain in English numerals.
+   - If incidents are described in Marathi/Hindi in the case facts, preserve that language and formalize it.
+   - Do NOT write in English when Marathi is requested. Do NOT mix English sentences into a Marathi petition.
 3. INCIDENTS — Each incident must be a separate numbered paragraph with:
    - The specific date (or approximate period if exact date unknown)
    - The type of violence (physical/verbal/economic/emotional)
@@ -81,7 +85,7 @@ MANDATORY RULES:
    (i) Prayer clause — formal prayer to the court
    (j) Verification — "I, [Name], do hereby verify…" with city and date
 6. Use [MISSING: FIELD] ONLY for names/addresses/dates genuinely absent from the facts JSON. Never for section numbers or standard legal phrases.
-7. The petition must be substantive — minimum 600 words. A short draft is unacceptable.
+7. The petition must be substantive and detailed — minimum 1200 words. Each incident paragraph must be at least 80 words with full factual detail. A short or summarised draft is UNACCEPTABLE.
 8. Do NOT add facts not present in the JSON. Do NOT hallucinate names, dates, or amounts.
 
 OUTPUT: Complete petition text only. No JSON, no commentary, no preamble."""
@@ -100,12 +104,16 @@ STYLE REFERENCE (advocate's sample petition — replicate this structure and ton
 ---
 DRAFT LANGUAGE: {language}
 
-Now draft the complete Section 12 DV Act petition. Remember:
-- Each incident = a separate numbered paragraph with date, type, and full description
-- Convert all colloquial/Marathi incident language into formal legal prose
-- Minimum 600 words
-- Correct section numbers for all reliefs
-- Draft entirely in {language}"""
+Now draft the complete Section 12 DV Act petition.
+
+CRITICAL REQUIREMENTS:
+1. LANGUAGE = {language}. The ENTIRE petition must be in {language}. If marathi, write in Devanagari script throughout.
+2. Each incident = a separate numbered paragraph with date, type of violence, FULL description (80+ words each), witnesses, injuries, FIR details
+3. Convert colloquial speech into formal legal language suitable for court filing
+4. Minimum 1200 words total — be detailed and thorough
+5. Include correct section numbers for all reliefs (Sec 18/19/20/21/22)
+6. Follow the STYLE REFERENCE structure exactly — same headings, numbering, prayer clause format
+7. Do NOT summarise incidents — expand them with legal detail"""
 
 MANDATORY_DISCLAIMER = """
 ---
@@ -225,16 +233,13 @@ async def generate_dv_petition_draft(
         template_ids_used = []
 
     # ------------------------------------------------------------------
-    # Step 4: Draft Generation
+    # Step 4: Draft Generation (Hybrid Pipeline)
     # ------------------------------------------------------------------
-    user_prompt = DRAFT_GENERATION_USER_TEMPLATE.format(
-        facts_json=json.dumps(facts, indent=2, ensure_ascii=False),
-        legal_context=legal_context,
-        style_reference=style_reference,
-        language=language,
-    )
-
-    prompt_hash = hashlib.sha256(user_prompt.encode()).hexdigest()
+    # Build prompt hash for dedup/logging
+    facts_json_str = json.dumps(facts, indent=2, ensure_ascii=False)
+    prompt_hash = hashlib.sha256(
+        f"{facts_json_str}{legal_context}{language}".encode()
+    ).hexdigest()
 
     logger.info(
         "draft_llm_call_start",
@@ -242,14 +247,25 @@ async def generate_dv_petition_draft(
         prompt_hash=prompt_hash[:16],
         legal_sections_count=len(legal_sections_used),
         templates_used=len(template_ids_used),
+        requested_language=language,
     )
 
+    # ── Hybrid Pipeline ──
+    # ALWAYS generate in English (Gemini/Groq are best at English legal drafting).
+    # If Marathi is requested, translate the English draft via Sarvam Saarika API
+    # (best-in-class Indic translation) — giving us Gemini's legal reasoning +
+    # Sarvam's native Marathi fluency.
     try:
         draft_text = await call_llm(
-            system_prompt=DRAFT_GENERATION_SYSTEM_PROMPT.format(language=language),
-            user_prompt=user_prompt,
+            system_prompt=DRAFT_GENERATION_SYSTEM_PROMPT.format(language="english"),
+            user_prompt=DRAFT_GENERATION_USER_TEMPLATE.format(
+                facts_json=json.dumps(facts, indent=2, ensure_ascii=False),
+                legal_context=legal_context,
+                style_reference=style_reference,
+                language="english",
+            ),
             temperature=0.3,
-            max_tokens=8192,
+            max_tokens=16384,  # Large output for detailed petition (1200+ words)
             json_mode=False,
         )
     except LLMError as exc:
@@ -261,10 +277,50 @@ async def generate_dv_petition_draft(
     if not draft_text:
         raise DraftGenerationError("LLM returned empty draft")
 
+    # ── Step 4b: Translate to Marathi if requested ──
+    generation_note = f"Generated in English by {active_provider()}"
+
+    if language.lower() in ("marathi", "mr-in", "mr"):
+        try:
+            from app.services.sarvam_translate_service import translate_text, TranslationError
+
+            logger.info(
+                "draft_translation_start",
+                case_id=str(case_id),
+                source="english",
+                target="marathi",
+                source_chars=len(draft_text),
+            )
+
+            draft_text = await translate_text(
+                text=draft_text,
+                target_language="mr-IN",
+                source_language="en-IN",
+                mode="formal",  # legal/formal register
+            )
+
+            generation_note = (
+                f"Generated in English by {active_provider()}, "
+                f"translated to Marathi by Sarvam Saarika (formal mode)"
+            )
+
+            logger.info(
+                "draft_translation_complete",
+                case_id=str(case_id),
+                translated_chars=len(draft_text),
+            )
+        except Exception as translate_exc:
+            logger.warning(
+                "draft_translation_failed_keeping_english",
+                case_id=str(case_id),
+                error=str(translate_exc),
+            )
+            generation_note += " (Marathi translation failed — draft is in English)"
+
     # Append mandatory disclaimer
     disclaimer = MANDATORY_DISCLAIMER.format(
         timestamp=datetime.utcnow().isoformat(),
-        model=active_provider(),
+        model=generation_note,
     )
     draft_text_with_disclaimer = draft_text + disclaimer
 

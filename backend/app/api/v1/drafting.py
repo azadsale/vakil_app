@@ -477,6 +477,92 @@ async def generate_draft(
 
 
 # -------------------------------------------------------------------------
+# Recent statements cache — MUST be before /{draft_id} catch-all
+# -------------------------------------------------------------------------
+
+@router.get("/recent-statements")
+async def list_recent_statements(
+    db: DB,
+    current_user: CurrentUser,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """List recent successful OCR/transcription results for the current user.
+
+    Returns cached Step 1 outputs so the user can reuse them without
+    re-uploading and re-OCR'ing the same document (saves Gemini quota).
+
+    Args:
+        db: Database session.
+        current_user: Authenticated lawyer UUID.
+        limit: Max number of results (default 10).
+
+    Returns:
+        List of recent statements with id, preview, char_count, created_at.
+    """
+    from sqlalchemy import desc
+
+    query = (
+        select(ClientStatement)
+        .where(
+            ClientStatement.user_id == current_user,
+            ClientStatement.status.in_([
+                StatementStatus.TRANSCRIBED,
+                StatementStatus.FACTS_EXTRACTED,
+                StatementStatus.DRAFT_GENERATED,
+            ]),
+            ClientStatement.transcript_clean.isnot(None),  # type: ignore[union-attr]
+        )
+        .order_by(desc(ClientStatement.created_at))  # type: ignore[arg-type]
+        .limit(limit)
+    )
+    result = await db.execute(query)
+    statements = result.scalars().all()
+
+    items = []
+    for stmt in statements:
+        text = stmt.transcript_clean or stmt.transcript_raw or ""
+        char_count = len(text)
+
+        # Skip obviously failed extractions (all pages = "OCR failed")
+        if char_count < 100:
+            continue
+        if "OCR failed" in text and text.count("OCR failed") > text.count("\n") * 0.5:
+            continue
+
+        preview = (text[:300] + "...") if len(text) > 300 else text
+
+        # Determine source type from audio_mime_type
+        mime = stmt.audio_mime_type or ""
+        if "pdf" in mime or "octet-stream" in mime:
+            source = "document"
+        elif "image" in mime:
+            source = "image"
+        elif "docx" in mime or "word" in mime:
+            source = "document"
+        else:
+            source = "voice"
+
+        # Quality indicator based on char count and content
+        quality = "good" if char_count > 5000 else "partial"
+
+        items.append({
+            "statement_id": str(stmt.id),
+            "preview": preview,
+            "char_count": char_count,
+            "quality": quality,
+            "language": stmt.language.value if stmt.language else "mr-IN",
+            "source": source,
+            "status": stmt.status.value,
+            "created_at": stmt.created_at.isoformat() if stmt.created_at else None,
+        })
+
+    return {
+        "statements": items,
+        "count": len(items),
+    }
+
+
+# -------------------------------------------------------------------------
 # Quota / health — MUST be before /{draft_id} catch-all
 # -------------------------------------------------------------------------
 
@@ -488,10 +574,13 @@ async def get_quota_status():
     remaining quota for a given task. This endpoint shows the current state.
     """
     quotas = await get_all_quotas()
+    from app.config import get_settings
+    n_keys = len(get_settings().gemini_api_keys) or 1
     return {
         "quotas": quotas,
-        "note": "The router tries the best model first. If its quota is exhausted, "
-                "it falls back to the next tier automatically.",
+        "num_api_keys": n_keys,
+        "note": f"Using {n_keys} API key(s). The router tries the best model+key first. "
+                "If quota is exhausted, it rotates to the next key or falls back to a lower tier.",
     }
 
 

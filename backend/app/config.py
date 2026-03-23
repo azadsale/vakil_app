@@ -81,9 +81,27 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # Google Gemini (Free LLM — 1M tokens/min, get key at aistudio.google.com)
     # Primary LLM — used when GEMINI_API_KEY is set (recommended)
+    # Supports multiple comma-separated keys for quota rotation:
+    #   GEMINI_API_KEY=AIza...key1,AIza...key2,AIza...key3
+    # Each free-tier key gives 20 req/day for gemini-2.5-flash.
+    # 3 keys = 60 req/day — enough for ~10 full document uploads.
     # -------------------------------------------------------------------------
     gemini_api_key: SecretStr = SecretStr("")
     gemini_model: str = "gemini-2.0-flash"   # free tier: 1500 req/day, 15 RPM — use 2.0 not 2.5 (2.5 is only 20/day)
+
+    @property
+    def gemini_api_keys(self) -> list[str]:
+        """Return list of Gemini API keys (supports comma-separated multi-key).
+
+        Usage in .env:
+            GEMINI_API_KEY=AIzaSy...key1,AIzaSy...key2,AIzaSy...key3
+
+        Each key gets its own free-tier quota, so N keys = N × 20 req/day.
+        """
+        raw = self.gemini_api_key.get_secret_value()
+        if not raw:
+            return []
+        return [k.strip() for k in raw.split(",") if k.strip()]
 
     # -------------------------------------------------------------------------
     # Groq (Fallback LLM — 12K tokens/min free, get key at console.groq.com)

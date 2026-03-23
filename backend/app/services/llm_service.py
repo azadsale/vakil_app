@@ -77,12 +77,17 @@ async def call_llm(
     groq_key = settings.groq_api_key.get_secret_value()
 
     if gemini_key:
-        # Use model router to pick the best model with enough quota
+        # Use model router to pick the best model + key with enough quota
+        selected_model = settings.gemini_model
+        selected_api_key = gemini_key
+        selected_key_index = 0
         try:
             from app.services.model_router import select_model, track_usage
-            selected_model = await select_model(task="text_llm", required_requests=1)
+            selected_model, selected_api_key, selected_key_index = await select_model(
+                task="text_llm", required_requests=1
+            )
         except Exception:
-            selected_model = settings.gemini_model  # fallback to config default
+            pass  # fallback to config defaults
 
         # Gemini has 1M token context — only truncate at a very high limit
         user_prompt, was_truncated = _truncate(user_prompt, _MAX_INPUT_CHARS_GEMINI)
@@ -92,8 +97,9 @@ async def call_llm(
             result = await _call_gemini(
                 system_prompt, user_prompt, temperature, max_tokens, json_mode,
                 model_override=selected_model,
+                api_key_override=selected_api_key,
             )
-            await track_usage(selected_model, count=1)
+            await track_usage(selected_model, count=1, key_index=selected_key_index)
             return result
         except Exception as exc:
             logger.warning("gemini_failed_trying_groq", error=str(exc))
@@ -122,6 +128,7 @@ async def _call_gemini(
     max_tokens: int,
     json_mode: bool,
     model_override: str | None = None,
+    api_key_override: str | None = None,
 ) -> str:
     """Call Google Gemini via the new google-genai SDK.
 
@@ -131,12 +138,15 @@ async def _call_gemini(
     Args:
         model_override: If set, use this model instead of the config default.
                        Typically set by the quota-aware model_router.
+        api_key_override: If set, use this API key instead of config default.
+                         Used by multi-key rotation.
     """
     from google import genai  # type: ignore[import]
     from google.genai import types  # type: ignore[import]
 
     use_model = model_override or settings.gemini_model
-    client = genai.Client(api_key=settings.gemini_api_key.get_secret_value())
+    use_key = api_key_override or settings.gemini_api_key.get_secret_value()
+    client = genai.Client(api_key=use_key)
 
     # Disable safety filters — legal case content about violence must not be blocked
     safety_settings = [

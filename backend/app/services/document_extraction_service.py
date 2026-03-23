@@ -197,7 +197,7 @@ async def _gemini_ocr_image_bytes(image_png_bytes: bytes, page_label: str = "") 
     raise DocumentExtractionError(f"Gemini Vision OCR failed for {page_label}: {last_exc}") from last_exc
 
 
-_GEMINI_OCR_BATCH_SIZE = 5   # pages per API call — reduces 41 calls to ~9 calls
+_GEMINI_OCR_BATCH_SIZE = 15  # pages per API call — 41 pages → ~3 calls (fits in 20 req/day quota)
 
 
 async def _gemini_ocr_batch(
@@ -205,6 +205,8 @@ async def _gemini_ocr_batch(
     page_start: int,
     batch_label: str,
     model: str | None = None,
+    api_key: str | None = None,
+    key_index: int = 0,
 ) -> "list[str]":
     """Send a batch of page images to Gemini in ONE API call.
 
@@ -215,6 +217,9 @@ async def _gemini_ocr_batch(
         page_pngs: List of PNG bytes for consecutive pages.
         page_start: 1-based index of the first page in the batch.
         batch_label: Human-readable label for logging.
+        model: Gemini model to use (from model router).
+        api_key: Gemini API key to use (from model router, supports multi-key).
+        key_index: Index of the API key being used (for quota tracking).
 
     Returns:
         List of extracted text strings, one per page.
@@ -225,7 +230,8 @@ async def _gemini_ocr_batch(
     from app.config import get_settings
     settings = get_settings()
 
-    client = genai.Client(api_key=settings.gemini_api_key.get_secret_value())
+    use_api_key = api_key or settings.gemini_api_key.get_secret_value()
+    client = genai.Client(api_key=use_api_key)
 
     # Build multi-image prompt
     page_labels = [f"Page {page_start + i}" for i in range(len(page_pngs))]
@@ -262,7 +268,7 @@ async def _gemini_ocr_batch(
     config = types.GenerateContentConfig(
         safety_settings=safety_settings,
         temperature=0.1,
-        max_output_tokens=8192,
+        max_output_tokens=16384,  # 15 pages/batch needs more output room
     )
 
     use_model = model or _GEMINI_OCR_MODEL_FALLBACK
@@ -360,49 +366,60 @@ async def _gemini_ocr_batch(
 
         except genai_errors.ClientError as exc:
             if exc.code == 429:
-                # ── Mark this model as exhausted and try next tier ──
+                # ── Mark this model+key as exhausted and try next tier/key ──
+                all_exhausted = False
                 try:
-                    from app.services.model_router import select_model, QuotaExhaustedError
-                    import redis.asyncio as aioredis
-                    from app.config import get_settings as _gs
-                    _s = _gs()
-                    _r = aioredis.from_url(_s.redis_url, decode_responses=True)
-                    import datetime
-                    _key = f"gemini_quota:{use_model}:{datetime.date.today().isoformat()}"
-                    # Set usage to daily_limit so router skips this model
-                    _limits = {"gemini-2.5-flash": 20, "gemini-2.0-flash": 1500, "gemini-2.0-flash-lite": 1500}
-                    await _r.setex(_key, 90_000, str(_limits.get(use_model, 9999)))
-                    await _r.aclose()
+                    from app.services.model_router import (
+                        select_model, mark_key_exhausted, QuotaExhaustedError,
+                    )
+                    await mark_key_exhausted(use_model, key_index)
                     logger.warning(
                         "gemini_model_exhausted_switching",
                         exhausted_model=use_model,
+                        key_index=key_index,
                         batch=batch_label,
                     )
-                    # Pick the next available model
+                    # Pick the next available model+key
                     try:
-                        new_model = await select_model(
+                        new_model, new_api_key, new_key_index = await select_model(
                             task="vision_ocr_fallback",
                             required_requests=1,
                             require_vision=True,
                         )
-                        if new_model != use_model:
+                        if new_model != use_model or new_key_index != key_index:
                             logger.info(
                                 "gemini_model_switched",
                                 from_model=use_model,
                                 to_model=new_model,
+                                from_key=key_index,
+                                to_key=new_key_index,
                                 batch=batch_label,
                             )
                             use_model = new_model
-                            # Recreate client is fine — same API key, different model
-                            await asyncio.sleep(2)  # brief pause
+                            use_api_key = new_api_key
+                            key_index = new_key_index
+                            client = genai.Client(api_key=use_api_key)
+                            await asyncio.sleep(2)
                             last_exc = exc
-                            continue  # retry this batch with new model
+                            continue  # retry with new model/key
                     except QuotaExhaustedError:
+                        all_exhausted = True
                         logger.error("all_models_exhausted_in_batch", batch=batch_label)
                 except Exception as router_err:
                     logger.warning("model_switch_failed", error=str(router_err))
 
-                # Fallback: wait and retry same model
+                # ── FAIL FAST when all models are exhausted ──
+                # Don't waste 2+ minutes retrying — break immediately
+                if all_exhausted:
+                    logger.error(
+                        "batch_abort_all_quotas_exhausted",
+                        batch=batch_label,
+                        note="Breaking immediately — no point retrying",
+                    )
+                    last_exc = exc
+                    break
+
+                # Only retry same model if NOT exhausted (e.g. RPM limit)
                 logger.warning(
                     "gemini_ocr_rate_limited_batch",
                     batch=batch_label,
@@ -448,20 +465,30 @@ async def _pdf_ocr_gemini(
         file_mb = len(file_bytes) / (1024 * 1024)
         n_batches = (total_pages + _GEMINI_OCR_BATCH_SIZE - 1) // _GEMINI_OCR_BATCH_SIZE
 
-        # ── Quota-aware model selection ──
+        # ── Quota-aware model + key selection ──
         # Pre-scan: we know the page count, calculate how many API requests
-        # we'll need, then pick the best model that has enough daily quota.
+        # we'll need, then pick the best model+key that has enough daily quota.
         from app.services.model_router import select_model, track_usage, QuotaExhaustedError
 
         try:
-            selected_model = await select_model(
+            selected_model, selected_api_key, selected_key_index = await select_model(
                 task="vision_ocr",
                 required_requests=n_batches,
                 require_vision=True,
             )
         except QuotaExhaustedError:
-            logger.warning("all_gemini_models_exhausted_using_fallback")
-            selected_model = _GEMINI_OCR_MODEL_FALLBACK
+            # All Gemini models/keys are exhausted — don't even try, fail fast
+            # so the caller can fall back to Tesseract immediately
+            doc.close()
+            logger.error(
+                "all_gemini_models_exhausted_aborting_ocr",
+                total_pages=total_pages,
+                n_batches=n_batches,
+            )
+            raise DocumentExtractionError(
+                "Gemini Vision daily quota exhausted for all models. "
+                "Falling back to Tesseract OCR."
+            )
 
         logger.info(
             "pdf_gemini_vision_ocr_start",
@@ -470,6 +497,7 @@ async def _pdf_ocr_gemini(
             n_batches=n_batches,
             file_mb=round(file_mb, 1),
             model=selected_model,
+            key_index=selected_key_index,
         )
 
         # Render at 2× (144 DPI) — good quality for Gemini, reasonable file size
@@ -492,10 +520,12 @@ async def _pdf_ocr_gemini(
                 page_start=batch_start + 1,   # 1-based
                 batch_label=batch_label,
                 model=selected_model,
+                api_key=selected_api_key,
+                key_index=selected_key_index,
             )
 
-            # Track this batch call against the model's daily quota
-            await track_usage(selected_model, count=1)
+            # Track this batch call against the model+key's daily quota
+            await track_usage(selected_model, count=1, key_index=selected_key_index)
 
             for i, text in enumerate(batch_texts):
                 page_num = batch_start + i
@@ -711,11 +741,31 @@ async def extract_text_from_document(
                 "pdf_scanned_needs_ocr",
                 engine="gemini_vision" if use_gemini else "tesseract",
             )
+            text = ""
             if use_gemini:
-                text = await _pdf_ocr_gemini(file_bytes, on_page_done)
-            else:
-                # Tesseract is sync — run in thread so we don't block event loop
-                text = await asyncio.to_thread(_pdf_ocr_tesseract, file_bytes, on_page_done)
+                try:
+                    text = await _pdf_ocr_gemini(file_bytes, on_page_done)
+                except DocumentExtractionError as ocr_err:
+                    # If Gemini fails (quota exhausted, etc.), fall back to Tesseract
+                    logger.warning(
+                        "gemini_ocr_failed_falling_back_to_tesseract",
+                        error=str(ocr_err),
+                    )
+
+            # Fallback: if Gemini produced nothing or wasn't available, try Tesseract
+            if not text or not text.strip():
+                logger.info("tesseract_fallback_ocr_start")
+                try:
+                    text = await asyncio.to_thread(
+                        _pdf_ocr_tesseract, file_bytes, on_page_done
+                    )
+                    if text and text.strip():
+                        logger.info(
+                            "tesseract_fallback_ocr_success",
+                            char_count=len(text.strip()),
+                        )
+                except Exception as tess_err:
+                    logger.warning("tesseract_fallback_also_failed", error=str(tess_err))
 
     # ── DOCX ─────────────────────────────────────────────────────────────────
     elif method == "docx":
@@ -723,19 +773,35 @@ async def extract_text_from_document(
 
     # ── Image ─────────────────────────────────────────────────────────────────
     else:
+        text = ""
         if use_gemini:
-            text = await _image_ocr_gemini(file_bytes, filename)
-        else:
+            try:
+                text = await _image_ocr_gemini(file_bytes, filename)
+            except Exception as img_err:
+                logger.warning("gemini_image_ocr_failed_trying_tesseract", error=str(img_err))
+        if not text or not text.strip():
             text = await asyncio.to_thread(_image_ocr_tesseract, file_bytes, filename)
 
     if not text or not text.strip():
+        # Check if Gemini quota was the cause
+        try:
+            from app.services.model_router import get_all_quotas
+            quotas = await get_all_quotas()
+            all_exhausted = all(q["remaining"] <= 0 for q in quotas)
+        except Exception:
+            all_exhausted = False
+
+        if all_exhausted:
+            raise DocumentExtractionError(
+                "Gemini AI daily quota exhausted and Tesseract OCR could not read the handwriting. "
+                "The quota resets at 12:30 PM IST (midnight Pacific Time). "
+                "Please try again after that, or upload a clearer typed PDF."
+            )
+
         if method == "pdf":
             raise DocumentExtractionError(
-                "No text found in PDF. "
-                + ("Please check the image quality — ensure the scan is clear."
-                   if use_gemini else
-                   "Please set GEMINI_API_KEY for better handwriting recognition, "
-                   "or upload as an image file.")
+                "No text found in PDF. Both Gemini Vision and Tesseract OCR failed. "
+                "Please check the image quality — ensure pages are clear and not too dark/blurry."
             )
         raise DocumentExtractionError(
             f"No text could be extracted from the {method.upper()} file. "
